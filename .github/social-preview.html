@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>claude-papercuts — social preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  /* GitHub social preview spec: 1280×640 with 40pt safe area.
+     Content vertically + horizontally centered within the safe area.
+     Sized so the block fits inside the safe zone with breathing room
+     above and below — never cropped on Slack/LinkedIn/X unfurls. */
+
+  :root {
+    --bg-a:        #0b0d12;
+    --bg-b:        #161922;
+    --fg:          #ffffff;
+    --fg-soft:     #e6e8ec;
+    --muted:       #8b919e;
+    --line:        rgba(255, 255, 255, 0.08);
+    --accent:      #ffb86b;
+    --num-bg:      rgba(255, 184, 107, 0.10);
+    --num-fg:      #ffb86b;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 1280px;
+    height: 640px;
+    background: var(--bg-a);
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont,
+                 'Segoe UI', sans-serif;
+    color: var(--fg);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 100% 70% at 50% 0%,
+        rgba(255, 184, 107, 0.10) 0%, transparent 60%),
+      radial-gradient(ellipse 80% 80% at 50% 110%,
+        rgba(80, 100, 180, 0.07) 0%, transparent 60%),
+      linear-gradient(180deg, var(--bg-a) 0%, var(--bg-b) 100%);
+    pointer-events: none;
+  }
+
+  /* The full canvas is 1280×640. CSS Grid with place-items: center is
+     the most reliable way to truly center content both axes. Padding
+     === 40pt safe area so nothing gets cropped on unfurls. */
+  .canvas {
+    position: relative;
+    width: 1280px;
+    height: 640px;
+    padding: 40px;
+    display: grid;
+    place-items: center;
+  }
+
+  /* Content sized to fit comfortably inside the 1200×560 safe area
+     with breathing room above and below. */
+  .content {
+    width: 100%;
+    max-width: 1080px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 26px;
+  }
+
+  /* === HEADER === */
+  .header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 2.6px;
+    text-transform: uppercase;
+  }
+
+  .eyebrow .dash {
+    width: 20px;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+
+  .wordmark {
+    font-size: 64px;
+    font-weight: 800;
+    line-height: 1.0;
+    letter-spacing: -2.2px;
+    color: var(--fg);
+  }
+
+  .wordmark .accent {
+    color: var(--accent);
+  }
+
+  .tagline {
+    font-size: 19px;
+    font-weight: 400;
+    line-height: 1.5;
+    color: var(--fg-soft);
+    max-width: 780px;
+  }
+
+  .tagline .quote {
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  /* === SKILL GRID === */
+  .skills {
+    width: 100%;
+    max-width: 1000px;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    column-gap: 52px;
+    row-gap: 10px;
+    text-align: left;
+  }
+
+  .skill {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .skill .num {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background: var(--num-bg);
+    color: var(--num-fg);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .skill .name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--fg);
+    letter-spacing: -0.2px;
+    min-width: 150px;
+  }
+
+  .skill .desc {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--muted);
+  }
+
+  /* === FOOTER === */
+  .footer {
+    width: 100%;
+    max-width: 1000px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .footer .badges {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .footer .dot {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+
+  .footer strong {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .footer .sep {
+    width: 1px;
+    height: 14px;
+    background: var(--line);
+  }
+
+  .footer .url {
+    color: var(--accent);
+    font-weight: 500;
+    font-size: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: -0.3px;
+  }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <div class="content">
+
+    <!-- Header -->
+    <div class="header">
+      <div class="eyebrow">
+        <span class="dash"></span>
+        <span>For Claude Code</span>
+        <span class="dash"></span>
+      </div>
+      <div class="wordmark">claude<span class="accent">-</span>papercuts</div>
+      <div class="tagline">
+        Ten Claude Code skills that fix bugs Anthropic closed as
+        <span class="quote">"not planned."</span>
+      </div>
+    </div>
+
+    <!-- All 10 skills -->
+    <div class="skills">
+      <div class="skill"><span class="num">01</span><span class="name">unclear</span><span class="desc">undo /clear</span></div>
+      <div class="skill"><span class="num">06</span><span class="name">compact-guard</span><span class="desc">save plan before compact</span></div>
+
+      <div class="skill"><span class="num">02</span><span class="name">done-prover</span><span class="desc">verify Claude's "done"</span></div>
+      <div class="skill"><span class="num">07</span><span class="name">safe-shell</span><span class="desc">block reckless commands</span></div>
+
+      <div class="skill"><span class="num">03</span><span class="name">skill-budget</span><span class="desc">audit invisible skills</span></div>
+      <div class="skill"><span class="num">08</span><span class="name">onboard</span><span class="desc">curated starter set</span></div>
+
+      <div class="skill"><span class="num">04</span><span class="name">amnesia-fix</span><span class="desc">cross-session memory</span></div>
+      <div class="skill"><span class="num">09</span><span class="name">skill-doctor</span><span class="desc">lint your SKILL.md</span></div>
+
+      <div class="skill"><span class="num">05</span><span class="name">token-x-ray</span><span class="desc">find context bloat</span></div>
+      <div class="skill"><span class="num">10</span><span class="name">subagent-broker</span><span class="desc">parallel task dispatch</span></div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <div class="badges">
+        <span><strong>MIT licensed</strong></span>
+        <span class="dot"></span>
+        <span>No telemetry</span>
+        <span class="dot"></span>
+        <span>Open source</span>
+      </div>
+      <span class="sep"></span>
+      <div class="url">github.com/dhruba-datta/claude-papercuts</div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>
