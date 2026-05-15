@@ -12,16 +12,25 @@ your machine is Claude itself.
 
 ## Install
 
+For now (pre-marketplace), clone and load locally:
+
+```bash
+git clone https://github.com/dhruba-datta/claude-papercuts ~/claude-papercuts
+claude --plugin-dir ~/claude-papercuts
+```
+
+Or convert your existing `.claude/` config — see the
+[Anthropic docs](https://code.claude.com/docs/en/plugins#convert-existing-configurations-to-plugins).
+
+Once a marketplace is set up (planned):
+
 ```bash
 /plugin marketplace add dhruba-datta/claude-papercuts
-/plugin install claude-papercuts@papercuts
+/plugin install claude-papercuts
 ```
 
-Or clone for the manual route:
-
-```bash
-git clone https://github.com/dhruba-datta/claude-papercuts ~/.claude/plugins/claude-papercuts
-```
+Skills in this plugin are namespaced. Invoke as
+`/claude-papercuts:<skill>`.
 
 ## The papercuts
 

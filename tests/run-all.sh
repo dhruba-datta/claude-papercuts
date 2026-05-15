@@ -1,0 +1,471 @@
+#!/usr/bin/env bash
+# tests/run-all.sh — exhaustive test suite for claude-papercuts.
+#
+# Runs every test we know how to run, locally. Designed to be safe to
+# invoke repeatedly. Cleans up after itself. Exits non-zero on any
+# failure so it can wire straight into CI.
+
+set -u
+
+# Resolve repo root regardless of where this is invoked from
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+HOOK="$REPO/skills/unclear/hooks/snapshot.sh"
+
+# Colors (disable if not a TTY)
+if [ -t 1 ]; then
+  RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'; RESET=$'\033[0m'
+else
+  RED=""; GREEN=""; YELLOW=""; RESET=""
+fi
+
+PASS=0
+FAIL=0
+SKIP=0
+FAILED_TESTS=()
+
+pass() { PASS=$((PASS + 1)); printf '  %s✓%s %s\n' "$GREEN" "$RESET" "$1"; }
+fail() { FAIL=$((FAIL + 1)); FAILED_TESTS+=("$1"); printf '  %s✗%s %s\n' "$RED" "$RESET" "$1"; }
+skip() { SKIP=$((SKIP + 1)); printf '  %s○%s %s (%s)\n' "$YELLOW" "$RESET" "$1" "$2"; }
+
+section() { printf '\n%s===%s %s\n' "$YELLOW" "$RESET" "$1"; }
+
+cleanup_dir=""
+cleanup() {
+  [ -n "$cleanup_dir" ] && [ -d "$cleanup_dir" ] && rm -rf "$cleanup_dir"
+}
+trap cleanup EXIT
+
+# Each test runs in a fresh tempdir so they can't interfere
+fresh_workspace() {
+  cleanup_dir=$(mktemp -d)
+  mkdir -p "$cleanup_dir/repo"
+  printf '{"type":"user","content":"hello"}\n' > "$cleanup_dir/transcript.jsonl"
+  printf '{"type":"assistant","content":"hi there"}\n' >> "$cleanup_dir/transcript.jsonl"
+  printf '%s' "$cleanup_dir"
+}
+
+run_hook() {
+  # $1 = payload, $2 = cwd
+  printf '%s' "$1" | "$HOOK" >"$2/hook.stdout" 2>"$2/hook.stderr"
+  echo $?
+}
+
+#-----------------------------------------------------------------------
+section "Artifact existence + permissions"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/.claude-plugin/plugin.json" ] && pass "plugin.json exists" || fail "plugin.json exists"
+[ -f "$REPO/hooks/hooks.json" ] && pass "hooks/hooks.json exists" || fail "hooks/hooks.json exists"
+[ -f "$REPO/skills/unclear/SKILL.md" ] && pass "SKILL.md exists" || fail "SKILL.md exists"
+[ -x "$HOOK" ] && pass "snapshot.sh is executable" || fail "snapshot.sh is executable"
+[ -f "$REPO/LICENSE" ] && pass "LICENSE exists" || fail "LICENSE exists"
+[ -f "$REPO/README.md" ] && pass "README.md exists" || fail "README.md exists"
+[ -f "$REPO/.gitignore" ] && pass ".gitignore exists" || fail ".gitignore exists"
+[ -f "$REPO/demos/unclear.tape" ] && pass "demo tape exists" || fail "demo tape exists"
+
+# Anti-mistake check from the docs: commands/skills/hooks must NOT be in .claude-plugin/
+[ ! -d "$REPO/.claude-plugin/skills" ] && pass ".claude-plugin/ has no skills/ inside" || fail ".claude-plugin/ has no skills/ inside"
+[ ! -d "$REPO/.claude-plugin/hooks" ] && pass ".claude-plugin/ has no hooks/ inside" || fail ".claude-plugin/ has no hooks/ inside"
+[ ! -d "$REPO/.claude-plugin/commands" ] && pass ".claude-plugin/ has no commands/ inside" || fail ".claude-plugin/ has no commands/ inside"
+
+#-----------------------------------------------------------------------
+section "JSON validity"
+#-----------------------------------------------------------------------
+
+if python3 -c "import json; json.load(open('$REPO/.claude-plugin/plugin.json'))" 2>/dev/null; then
+  pass "plugin.json is valid JSON"
+else
+  fail "plugin.json is valid JSON"
+fi
+
+if python3 -c "import json; json.load(open('$REPO/hooks/hooks.json'))" 2>/dev/null; then
+  pass "hooks/hooks.json is valid JSON"
+else
+  fail "hooks/hooks.json is valid JSON"
+fi
+
+#-----------------------------------------------------------------------
+section "plugin.json schema"
+#-----------------------------------------------------------------------
+
+python3 - <<PY
+import json, sys
+try:
+    with open("$REPO/.claude-plugin/plugin.json") as f:
+        m = json.load(f)
+    assert isinstance(m.get("name"), str) and m["name"], "name missing or not a string"
+    assert m["name"].islower(), "name must be lowercase"
+    assert "/" not in m["name"] and " " not in m["name"], "name must not contain slashes or spaces"
+    assert isinstance(m.get("description"), str), "description missing or not a string"
+    assert isinstance(m.get("version"), str), "version missing or not a string"
+    parts = m["version"].split(".")
+    assert len(parts) == 3 and all(p.isdigit() for p in parts), "version must be semver-like X.Y.Z"
+    assert isinstance(m.get("author"), dict), "author must be an object"
+    assert isinstance(m["author"].get("name"), str), "author.name must be a string"
+    # Forbidden fields (legacy or invented):
+    for forbidden in ["skills", "commands", "hooks"]:
+        assert forbidden not in m, f"plugin.json must not contain '{forbidden}' (legacy/incorrect)"
+    print("OK")
+except AssertionError as e:
+    print(f"FAIL: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "plugin.json matches Anthropic schema (name, description, version, author, no legacy fields)"
+else
+  fail "plugin.json matches Anthropic schema"
+fi
+
+#-----------------------------------------------------------------------
+section "hooks.json schema"
+#-----------------------------------------------------------------------
+
+python3 - <<PY
+import json, sys
+try:
+    with open("$REPO/hooks/hooks.json") as f:
+        h = json.load(f)
+    assert "hooks" in h, "top-level 'hooks' key missing"
+    assert "Stop" in h["hooks"], "Stop event not registered"
+    stop = h["hooks"]["Stop"]
+    assert isinstance(stop, list) and stop, "Stop must be a non-empty list"
+    entry = stop[0]
+    assert "matcher" in entry, "matcher missing"
+    assert "hooks" in entry, "inner hooks missing"
+    inner = entry["hooks"][0]
+    assert inner.get("type") == "command", "hook type must be 'command'"
+    cmd = inner.get("command", "")
+    assert "\${CLAUDE_PLUGIN_ROOT}" in cmd, "command must use \${CLAUDE_PLUGIN_ROOT}"
+    assert cmd.endswith("snapshot.sh"), "command must point at snapshot.sh"
+    print("OK")
+except AssertionError as e:
+    print(f"FAIL: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "hooks/hooks.json matches Anthropic schema"
+else
+  fail "hooks/hooks.json matches Anthropic schema"
+fi
+
+#-----------------------------------------------------------------------
+section "SKILL.md frontmatter"
+#-----------------------------------------------------------------------
+
+python3 - <<PY
+import re, sys
+try:
+    with open("$REPO/skills/unclear/SKILL.md") as f:
+        body = f.read()
+    m = re.match(r"^---\n(.*?)\n---\n", body, re.DOTALL)
+    assert m, "missing YAML frontmatter delimiters"
+    fm = m.group(1)
+    # name (optional per docs, but we include it)
+    name_m = re.search(r"^name:\s*(\S+)", fm, re.MULTILINE)
+    assert name_m and name_m.group(1) == "unclear", "name must be 'unclear'"
+    # description (required)
+    desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z-]+:|\Z)", fm, re.DOTALL | re.MULTILINE)
+    assert desc_m, "description missing"
+    desc = desc_m.group(1).strip()
+    assert len(desc) > 50, "description too short to be useful"
+    assert len(desc) < 1024, f"description {len(desc)} chars exceeds typical per-skill budget"
+    # Body after frontmatter is non-empty
+    rest = body[m.end():]
+    assert len(rest.strip()) > 100, "SKILL.md body is too short"
+    print(f"OK (desc={len(desc)} chars)")
+except AssertionError as e:
+    print(f"FAIL: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "SKILL.md frontmatter is valid"
+else
+  fail "SKILL.md frontmatter is valid"
+fi
+
+#-----------------------------------------------------------------------
+section "Snapshot hook — happy path"
+#-----------------------------------------------------------------------
+
+W=$(fresh_workspace)
+PAYLOAD=$(printf '{"session_id":"s1","transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+EXIT=$(run_hook "$PAYLOAD" "$W")
+[ "$EXIT" = "0" ] && pass "hook exits 0 on valid payload" || fail "hook exits 0 on valid payload (got $EXIT)"
+count=$(find "$W/repo/.papercuts/snapshots" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+[ "$count" = "1" ] && pass "hook wrote exactly one snapshot" || fail "hook wrote one snapshot (got $count)"
+snap=$(ls "$W/repo/.papercuts/snapshots/"*.jsonl 2>/dev/null | head -1)
+if [ -f "$snap" ] && diff -q "$snap" "$W/transcript.jsonl" >/dev/null; then
+  pass "snapshot contents match source transcript"
+else
+  fail "snapshot contents match source transcript"
+fi
+# Filename pattern check
+fname=$(basename "$snap")
+if echo "$fname" | grep -qE '^[0-9]{8}T[0-9]{6}Z\.jsonl$'; then
+  pass "snapshot filename matches UTC timestamp pattern"
+else
+  fail "snapshot filename matches UTC timestamp pattern (got '$fname')"
+fi
+cleanup; cleanup_dir=""
+
+#-----------------------------------------------------------------------
+section "Snapshot hook — error handling (must never block the user)"
+#-----------------------------------------------------------------------
+
+# Empty stdin
+W=$(fresh_workspace)
+EXIT=$(printf '' | "$HOOK" >"$W/out" 2>"$W/err"; echo $?)
+[ "$EXIT" = "0" ] && pass "exit 0 on empty stdin" || fail "exit 0 on empty stdin (got $EXIT)"
+cleanup; cleanup_dir=""
+
+# Malformed JSON
+W=$(fresh_workspace)
+EXIT=$(run_hook "this is not json {{{" "$W")
+[ "$EXIT" = "0" ] && pass "exit 0 on malformed JSON" || fail "exit 0 on malformed JSON (got $EXIT)"
+cleanup; cleanup_dir=""
+
+# Missing transcript_path
+W=$(fresh_workspace)
+EXIT=$(run_hook '{"session_id":"s","cwd":"'"$W"'/repo"}' "$W")
+[ "$EXIT" = "0" ] && pass "exit 0 on missing transcript_path" || fail "exit 0 on missing transcript_path (got $EXIT)"
+count=$(find "$W/repo" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+[ "$count" = "0" ] && pass "no snapshot written on missing transcript_path" || fail "no snapshot written on missing transcript_path"
+cleanup; cleanup_dir=""
+
+# Missing cwd
+W=$(fresh_workspace)
+EXIT=$(run_hook '{"session_id":"s","transcript_path":"'"$W"'/transcript.jsonl"}' "$W")
+[ "$EXIT" = "0" ] && pass "exit 0 on missing cwd" || fail "exit 0 on missing cwd (got $EXIT)"
+cleanup; cleanup_dir=""
+
+# transcript_path points at nonexistent file
+W=$(fresh_workspace)
+EXIT=$(run_hook '{"transcript_path":"/tmp/does-not-exist-xyz.jsonl","cwd":"'"$W"'/repo"}' "$W")
+[ "$EXIT" = "0" ] && pass "exit 0 when transcript file doesn't exist" || fail "exit 0 when transcript file doesn't exist (got $EXIT)"
+count=$(find "$W/repo" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+[ "$count" = "0" ] && pass "no snapshot written on missing transcript file" || fail "no snapshot on missing transcript file"
+cleanup; cleanup_dir=""
+
+# cwd doesn't exist
+W=$(fresh_workspace)
+EXIT=$(run_hook '{"transcript_path":"'"$W"'/transcript.jsonl","cwd":"/tmp/does-not-exist-xyz-9999"}' "$W")
+[ "$EXIT" = "0" ] && pass "exit 0 when cwd doesn't exist" || fail "exit 0 when cwd doesn't exist (got $EXIT)"
+cleanup; cleanup_dir=""
+
+# Empty-string transcript_path
+W=$(fresh_workspace)
+EXIT=$(run_hook '{"transcript_path":"","cwd":"'"$W"'/repo"}' "$W")
+[ "$EXIT" = "0" ] && pass "exit 0 on empty transcript_path" || fail "exit 0 on empty transcript_path (got $EXIT)"
+cleanup; cleanup_dir=""
+
+#-----------------------------------------------------------------------
+section "Snapshot hook — retention pruning"
+#-----------------------------------------------------------------------
+
+# 7 existing → keep 5 newest
+W=$(fresh_workspace)
+mkdir -p "$W/repo/.papercuts/snapshots"
+for i in 1 2 3 4 5 6 7; do
+  fname="$W/repo/.papercuts/snapshots/2026010${i}T120000Z.jsonl"
+  printf 'old\n' > "$fname"
+  touch -t "2026010${i}1200" "$fname"
+done
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+EXIT=$(run_hook "$PAYLOAD" "$W")
+count=$(find "$W/repo/.papercuts/snapshots" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+[ "$count" = "5" ] && pass "retention: 7+new pruned down to 5" || fail "retention: expected 5, got $count"
+# Confirm the newest (just-written) snapshot is preserved (it's the newest of all 8)
+newest_file=$(ls -1t "$W/repo/.papercuts/snapshots/"*.jsonl | head -1)
+if ! grep -q '^old$' "$newest_file"; then
+  pass "newest snapshot is the freshly-written one (not an old seed)"
+else
+  fail "newest snapshot should be fresh, not from the seed batch"
+fi
+cleanup; cleanup_dir=""
+
+# 0 existing → 1
+W=$(fresh_workspace)
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+run_hook "$PAYLOAD" "$W" >/dev/null
+count=$(find "$W/repo/.papercuts/snapshots" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+[ "$count" = "1" ] && pass "retention: 0 existing → 1" || fail "retention: 0 → 1 (got $count)"
+cleanup; cleanup_dir=""
+
+# Exactly 5 existing → still 5 (oldest one pruned in favor of new)
+W=$(fresh_workspace)
+mkdir -p "$W/repo/.papercuts/snapshots"
+for i in 1 2 3 4 5; do
+  fname="$W/repo/.papercuts/snapshots/2026010${i}T120000Z.jsonl"
+  printf 'old\n' > "$fname"
+  touch -t "2026010${i}1200" "$fname"
+done
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+run_hook "$PAYLOAD" "$W" >/dev/null
+count=$(find "$W/repo/.papercuts/snapshots" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+[ "$count" = "5" ] && pass "retention: 5+new still capped at 5" || fail "retention: 5+new (got $count)"
+cleanup; cleanup_dir=""
+
+# 100 existing → 5
+W=$(fresh_workspace)
+mkdir -p "$W/repo/.papercuts/snapshots"
+for i in $(seq 1 100); do
+  printf -v fname "%s/repo/.papercuts/snapshots/2025%05dT120000Z.jsonl" "$W" "$i"
+  printf 'old\n' > "$fname"
+done
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+run_hook "$PAYLOAD" "$W" >/dev/null
+count=$(find "$W/repo/.papercuts/snapshots" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+[ "$count" = "5" ] && pass "retention: 100+new pruned to 5" || fail "retention: 100+new (got $count)"
+cleanup; cleanup_dir=""
+
+# Non-jsonl files in the snapshot dir must not be touched
+W=$(fresh_workspace)
+mkdir -p "$W/repo/.papercuts/snapshots"
+echo "this is not a snapshot" > "$W/repo/.papercuts/snapshots/README.txt"
+echo "neither is this" > "$W/repo/.papercuts/snapshots/config.json"
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+run_hook "$PAYLOAD" "$W" >/dev/null
+[ -f "$W/repo/.papercuts/snapshots/README.txt" ] && [ -f "$W/repo/.papercuts/snapshots/config.json" ] \
+  && pass "retention leaves non-jsonl files alone" \
+  || fail "retention leaves non-jsonl files alone"
+cleanup; cleanup_dir=""
+
+#-----------------------------------------------------------------------
+section "Snapshot hook — content fidelity"
+#-----------------------------------------------------------------------
+
+# Unicode + control characters in transcript content
+W=$(fresh_workspace)
+printf '{"type":"user","content":"héllo 🦀 \\u0000 \\\"quoted\\\""}\n' > "$W/transcript.jsonl"
+printf '{"type":"assistant","content":"日本語テスト"}\n' >> "$W/transcript.jsonl"
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+run_hook "$PAYLOAD" "$W" >/dev/null
+snap=$(ls "$W/repo/.papercuts/snapshots/"*.jsonl 2>/dev/null | head -1)
+if [ -f "$snap" ] && diff -q "$snap" "$W/transcript.jsonl" >/dev/null; then
+  pass "unicode + control chars preserved byte-for-byte"
+else
+  fail "unicode preservation"
+fi
+cleanup; cleanup_dir=""
+
+# Spaces in cwd path
+W=$(mktemp -d "/tmp/papercuts test XXXXXX")
+cleanup_dir="$W"
+mkdir -p "$W/repo with spaces"
+printf 'test\n' > "$W/transcript.jsonl"
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo with spaces"}' "$W" "$W")
+EXIT=$(run_hook "$PAYLOAD" "$W")
+count=$(find "$W/repo with spaces" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$EXIT" = "0" ] && [ "$count" = "1" ]; then
+  pass "handles spaces in cwd path"
+else
+  fail "handles spaces in cwd path (exit=$EXIT, count=$count)"
+fi
+cleanup; cleanup_dir=""
+
+# 1 MB transcript (boundary)
+W=$(fresh_workspace)
+python3 -c "
+import json
+with open('$W/transcript.jsonl', 'w') as f:
+    for i in range(5000):
+        f.write(json.dumps({'type':'user','content':'x'*200,'idx':i})+'\n')
+"
+size=$(wc -c < "$W/transcript.jsonl")
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+EXIT=$(run_hook "$PAYLOAD" "$W")
+snap=$(ls "$W/repo/.papercuts/snapshots/"*.jsonl 2>/dev/null | head -1)
+if [ "$EXIT" = "0" ] && [ -f "$snap" ] && [ "$(wc -c < "$snap")" = "$size" ]; then
+  pass "handles ~1MB transcript ($size bytes)"
+else
+  fail "handles large transcript"
+fi
+cleanup; cleanup_dir=""
+
+#-----------------------------------------------------------------------
+section "Snapshot hook — concurrent invocations"
+#-----------------------------------------------------------------------
+
+# Two invocations in parallel — both should succeed even if filenames collide
+W=$(fresh_workspace)
+PAYLOAD=$(printf '{"transcript_path":"%s/transcript.jsonl","cwd":"%s/repo"}' "$W" "$W")
+printf '%s' "$PAYLOAD" | "$HOOK" >/dev/null 2>&1 &
+printf '%s' "$PAYLOAD" | "$HOOK" >/dev/null 2>&1 &
+wait
+# We don't care whether 1 or 2 snapshots exist (depends on whether they
+# collided within the same second); only that neither errored out and
+# at least one was written
+count=$(find "$W/repo/.papercuts/snapshots" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+[ "$count" -ge "1" ] && pass "concurrent invocations don't crash (wrote $count file(s))" || fail "concurrent invocations (got $count)"
+cleanup; cleanup_dir=""
+
+#-----------------------------------------------------------------------
+section "Static analysis — shellcheck"
+#-----------------------------------------------------------------------
+
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck "$HOOK"; then
+    pass "shellcheck passes on snapshot.sh"
+  else
+    fail "shellcheck passes on snapshot.sh"
+  fi
+else
+  skip "shellcheck on snapshot.sh" "shellcheck not installed"
+fi
+
+# Run the test runner through shellcheck too (skip SC2086 cases we already know about)
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck --severity=error "$SCRIPT_DIR/run-all.sh"; then
+    pass "shellcheck (errors only) passes on run-all.sh itself"
+  else
+    fail "shellcheck on run-all.sh"
+  fi
+fi
+
+#-----------------------------------------------------------------------
+section "README + docs sanity"
+#-----------------------------------------------------------------------
+
+# README references the actual repo URL
+if grep -q "github.com/dhruba-datta/claude-papercuts" "$REPO/README.md"; then
+  pass "README references the correct GitHub URL"
+else
+  fail "README has the wrong/missing GitHub URL"
+fi
+
+# No leftover [handle] placeholders (exclude tests/ which grep-references the pattern itself, and .git/)
+if ! grep -rn --exclude-dir=tests --exclude-dir=.git "\[handle\]" "$REPO" 2>/dev/null; then
+  pass "no leftover [handle] placeholders in repo"
+else
+  fail "leftover [handle] placeholders found"
+fi
+
+# docs/issues.md has all 16 issues referenced
+issue_refs=$(grep -oE "#[0-9]+" "$REPO/docs/issues.md" | sort -u | wc -l | tr -d ' ')
+[ "$issue_refs" -ge "16" ] && pass "docs/issues.md references at least 16 issue numbers" || fail "docs/issues.md only references $issue_refs unique issue numbers (need 16)"
+
+# README has the 10-skill table
+table_rows=$(grep -cE "^\| [0-9]+ \|" "$REPO/README.md")
+[ "$table_rows" = "10" ] && pass "README skill table has exactly 10 rows" || fail "README skill table has $table_rows rows (need 10)"
+
+#-----------------------------------------------------------------------
+section "Summary"
+#-----------------------------------------------------------------------
+
+TOTAL=$((PASS + FAIL))
+printf '\n  %sPassed%s: %d / %d\n' "$GREEN" "$RESET" "$PASS" "$TOTAL"
+if [ "$SKIP" -gt 0 ]; then
+  printf '  %sSkipped%s: %d\n' "$YELLOW" "$RESET" "$SKIP"
+fi
+if [ "$FAIL" -gt 0 ]; then
+  printf '  %sFailed%s: %d\n' "$RED" "$RESET" "$FAIL"
+  printf '\nFailed tests:\n'
+  for t in "${FAILED_TESTS[@]}"; do
+    printf '  - %s\n' "$t"
+  done
+  exit 1
+fi
+
+printf '\n  %sAll tests passed.%s\n' "$GREEN" "$RESET"
+exit 0

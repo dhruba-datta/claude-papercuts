@@ -1,6 +1,7 @@
 ---
 name: unclear
-description: Restore Claude Code conversation context after an accidental /clear. Use this skill when the user types /unclear, mentions accidentally clearing the conversation, asks to undo /clear, or wants to recover lost context from a recent session. Reads the most recent automatic snapshot from .papercuts/snapshots/ and reconstructs what was being discussed.
+description: Restore Claude Code conversation context after an accidental /clear. Use this skill when the user types /claude-papercuts:unclear, mentions accidentally clearing the conversation, asks to undo /clear, or wants to recover lost context from a recent session. Reads the most recent automatic snapshot from .papercuts/snapshots/ and reconstructs what was being discussed.
+allowed-tools: Bash(ls:*), Bash(cat:*), Bash(head:*), Read
 ---
 
 # unclear — undo `/clear`
@@ -20,16 +21,16 @@ description: Restore Claude Code conversation context after an accidental /clear
    snapshot of the current conversation transcript to
    `.papercuts/snapshots/<timestamp>.jsonl` (project-local, gitignored).
 2. The 5 most recent snapshots are kept; older ones are pruned.
-3. When the user runs `/unclear` (or mentions wanting to recover
-   context), this skill reads the most recent snapshot and reconstructs
-   a summary of what was being worked on so Claude can pick up where
-   things left off.
+3. When the user invokes this skill (via `/claude-papercuts:unclear` or
+   by mentioning a recovery phrase), it reads the most recent snapshot
+   and reconstructs a summary of what was being worked on so work can
+   continue cleanly.
 
-## When to invoke this skill
+## When you (the model) should invoke this skill
 
 Auto-invoke when the user:
 
-- Runs the `/unclear` slash command
+- Runs the `/claude-papercuts:unclear` slash command
 - Says "I accidentally cleared the conversation"
 - Says "can you remember what we were working on"
 - Says "undo /clear"
@@ -37,42 +38,107 @@ Auto-invoke when the user:
 
 ## Recovery procedure
 
-When invoked (either via the `/unclear` slash command or because the
-user mentioned a relevant phrase):
+When invoked, follow these steps exactly.
 
-1. List files matching `.papercuts/snapshots/*.jsonl` in the project
-   working directory (sorted by mtime, newest first).
-2. If no snapshots exist, tell the user:
-   > "No snapshots found. The Stop hook may not have run yet — this
-   > skill snapshots at the end of each assistant turn, so a brand-new
-   > session has no recovery point. Future sessions will."
-3. Otherwise, read the newest snapshot file. It's a JSONL file matching
-   the format of Claude Code's transcript files.
-4. Extract the last 10 messages (user + assistant). Summarize:
-   - What was being worked on
-   - The most recent decisions or "Next:" / "Blocker:" lines
-   - Any files that were being edited (look for `tool_use_id` events
-     with `Edit` or `Write` tools)
-5. Present a recap to the user in this format:
+### Step 1 — Locate snapshots
 
-   ```
-   Restored from snapshot: <relative path>
-   Timestamp: <ISO 8601>
-   Last topic: <one sentence>
+Run this in the shell:
 
-   Last 3 decisions:
-   - <decision 1>
-   - <decision 2>
-   - <decision 3>
+```bash
+ls -1t .papercuts/snapshots/*.jsonl 2>/dev/null | head -5
+```
 
-   Files being edited:
-   - <path>
-   - <path>
+If the output is empty, the Stop hook has not run yet in this project.
+Tell the user:
 
-   Ready to continue.
-   ```
+> No snapshots found in `.papercuts/snapshots/`. The Stop hook writes
+> a snapshot at the end of every assistant turn, so a brand-new
+> session has no recovery point. Future sessions in this project will
+> be recoverable.
 
-6. Wait for the user to confirm before doing any further action.
+Then stop.
+
+### Step 2 — Read the newest snapshot
+
+Use the Read tool to load the most recent snapshot file (the first
+line of the `ls` output). It's a JSONL file where each line is one
+JSON object representing a turn in the prior conversation. The schema
+is roughly:
+
+```jsonc
+{"type": "user" | "assistant" | "summary" | "tool_use" | "tool_result",
+ "message": {"role": "...", "content": [...]},
+ "timestamp": "ISO-8601",
+ ...}
+```
+
+Different Claude Code versions may use slightly different schemas. Be
+permissive — read whatever's there.
+
+### Step 3 — Summarize the prior conversation
+
+Extract from the snapshot:
+
+- **What was being worked on** — read the first 2-3 user messages and
+  the last assistant message to bracket the topic
+- **Files being edited** — scan tool_use entries for `Edit`, `Write`,
+  `Read` and collect unique paths
+- **Recent decisions** — look for lines in assistant messages starting
+  with "Decision:", "Next:", "Blocker:", or explicit conclusions
+- **Anything the user explicitly asked you not to do** — these are
+  often the most important signals to preserve
+
+### Step 4 — Present the recap
+
+Output exactly this format (terminal-friendly, no emoji, no
+exclamation marks):
+
+```
+─── /unclear: snapshot restored ───
+Source: <relative path to snapshot file>
+Timestamp: <ISO-8601 from the snapshot filename, decoded>
+Turns recovered: <count>
+
+Last topic
+  <one-sentence summary>
+
+Files in play
+  <path 1>
+  <path 2>
+  ...
+
+Recent decisions
+  • <decision 1>
+  • <decision 2>
+  • <decision 3>
+
+Picking up from
+  "<verbatim final user message, or final assistant turn if no
+   pending user turn>"
+─────────────────────────────────
+```
+
+### Step 5 — Wait
+
+After printing the recap, do not take any further action. Wait for the
+user to confirm or redirect. They may want to:
+
+- Resume exactly where they left off (most common)
+- Pick one of the listed decisions to revisit
+- Discard the recap and start fresh
+
+Match the user's intent on the next turn. Do not assume.
+
+## Edge cases
+
+- **Multiple snapshots in the same UTC second**: pick the
+  alphabetically last one (timestamps are UTC and lexicographically
+  ordered).
+- **Snapshot is empty or malformed JSON**: try the next-newest. If all
+  recent snapshots are unreadable, tell the user honestly and stop.
+- **Snapshot is from a different cwd than the current one**: still
+  read it, but flag in the recap: "Note: snapshot was taken from
+  `<other path>` — context may not match this directory."
 
 ## Configuration
 
@@ -87,14 +153,17 @@ Optional `.papercuts/config.json` in the project root:
 }
 ```
 
+Defaults are sensible. Most users never need to touch this.
+
 ## What this skill does NOT do
 
 - It does not literally restore Claude's internal conversation history.
-  Claude Code's transcript is internal state. The skill gives you a
+  Claude Code's transcript is internal state. The skill gives a
   human-readable + Claude-readable recap that lets the conversation
   continue from a known good point.
-- It does not auto-trigger `/clear`. The Stop hook simply snapshots
-  every turn so a snapshot is always available.
+- It does not auto-trigger on `/clear`. The Stop hook simply
+  snapshots every turn so a snapshot is always available before the
+  next `/clear`.
 - It does not store anything outside `.papercuts/snapshots/` in your
   project. Add `.papercuts/` to `.gitignore` if not already.
 
@@ -102,5 +171,5 @@ Optional `.papercuts/config.json` in the project root:
 
 The Stop hook writes the transcript to a local file in your project's
 `.papercuts/` directory. No network calls. No telemetry. If you don't
-want any local persistence either, disable the hook in your Claude
+want local persistence either, disable the hook in your Claude
 settings — the slash command will simply report "no snapshots found."

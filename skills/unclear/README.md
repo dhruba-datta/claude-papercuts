@@ -43,9 +43,9 @@ User picks up where they left off
 
 | Path | What |
 |---|---|
-| `skills/unclear/SKILL.md` | Skill metadata for Claude's auto-invocation |
-| `skills/unclear/hooks/snapshot.sh` | Stop hook that snapshots each turn |
-| `commands/unclear.md` | The `/unclear` slash command implementation |
+| `skills/unclear/SKILL.md` | Skill metadata + recovery instructions (auto-invocation and `/claude-papercuts:unclear` both run this) |
+| `skills/unclear/hooks/snapshot.sh` | Stop hook script that snapshots each turn |
+| `hooks/hooks.json` | Plugin-level registration of the Stop hook |
 
 ## Configuration
 
@@ -75,7 +75,7 @@ ls -1t .papercuts/snapshots/ | head -3
 
 # Test recovery (in a fresh session)
 claude
-/unclear
+/claude-papercuts:unclear
 ```
 
 ## Privacy
