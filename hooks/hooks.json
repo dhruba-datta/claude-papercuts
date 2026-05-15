@@ -7,6 +7,21 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/skills/amnesia-fix/hooks/journal-load.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/compact-guard/hooks/load-state.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/compact-guard/hooks/save-state.sh"
           }
         ]
       }

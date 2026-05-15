@@ -16,6 +16,8 @@ AUDIT="$REPO/skills/skill-budget/audit.py"
 AMNESIA_APPEND="$REPO/skills/amnesia-fix/hooks/journal-append.sh"
 AMNESIA_LOAD="$REPO/skills/amnesia-fix/hooks/journal-load.sh"
 TX_AUDIT="$REPO/skills/token-x-ray/audit.py"
+CG_SAVE="$REPO/skills/compact-guard/hooks/save-state.sh"
+CG_LOAD="$REPO/skills/compact-guard/hooks/load-state.sh"
 
 # Colors (disable if not a TTY)
 if [ -t 1 ]; then
@@ -1119,6 +1121,247 @@ print('sorted' if toks == sorted(toks, reverse=True) else 'unsorted')
 rm -rf "$tx_tmp"
 
 #-----------------------------------------------------------------------
+section "compact-guard — artifact existence"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/skills/compact-guard/SKILL.md" ] && pass "compact-guard SKILL.md exists" || fail "compact-guard SKILL.md exists"
+[ -f "$REPO/skills/compact-guard/README.md" ] && pass "compact-guard README.md exists" || fail "compact-guard README.md exists"
+[ -x "$CG_SAVE" ] && pass "compact-guard save-state.sh is executable" || fail "compact-guard save-state.sh is executable"
+[ -x "$CG_LOAD" ] && pass "compact-guard load-state.sh is executable" || fail "compact-guard load-state.sh is executable"
+[ -f "$REPO/demos/compact-guard.gif" ] && pass "compact-guard demo GIF exists" || fail "compact-guard demo GIF exists"
+[ -f "$REPO/demos/compact-guard.tape" ] && pass "compact-guard tape exists" || fail "compact-guard tape exists"
+[ -x "$REPO/demos/scenario-compact-guard.sh" ] && pass "compact-guard scenario script is executable" || fail "compact-guard scenario script is executable"
+
+#-----------------------------------------------------------------------
+section "compact-guard — SKILL.md frontmatter"
+#-----------------------------------------------------------------------
+
+python3 - <<PY 2>/dev/null
+import re, sys
+with open("$REPO/skills/compact-guard/SKILL.md") as f:
+    text = f.read()
+m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+assert m, "no frontmatter"
+fm = m.group(1)
+name_m = re.search(r"^name:\s*(.+?)\s*$", fm, re.MULTILINE)
+desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z][a-z0-9_-]*:|\Z)", fm, re.DOTALL | re.MULTILINE)
+assert name_m and name_m.group(1) == "compact-guard", "name must be 'compact-guard'"
+assert desc_m, "description missing"
+desc = re.sub(r"\s+", " ", desc_m.group(1).strip())
+assert 50 <= len(desc) <= 1024, f"description length {len(desc)} not in [50,1024]"
+PY
+if [ $? -eq 0 ]; then
+  pass "compact-guard SKILL.md frontmatter is valid"
+else
+  fail "compact-guard SKILL.md frontmatter"
+fi
+
+#-----------------------------------------------------------------------
+section "compact-guard — save-state.sh behavior"
+#-----------------------------------------------------------------------
+
+cg_tmp=$(mktemp -d)
+mkdir -p "$cg_tmp/repo"
+
+# Helper to run save-state.sh with a payload + transcript
+run_save() {
+  # $1 = transcript path, $2 = trigger
+  local payload
+  payload=$(python3 -c "
+import json
+print(json.dumps({
+  'session_id': 'test-session-abc',
+  'transcript_path': '$1',
+  'cwd': '$cg_tmp/repo',
+  'hook_event_name': 'PreCompact',
+  'trigger': '$2',
+}))")
+  printf '%s' "$payload" | "$CG_SAVE"
+}
+
+# Test 1: fail-safe — no payload
+if printf '' | "$CG_SAVE" > /dev/null 2>&1; then
+  pass "save-state: empty payload exits 0"
+else
+  fail "save-state: empty payload should exit 0"
+fi
+
+# Test 2: fail-safe — malformed JSON
+if printf 'not json {{' | "$CG_SAVE" > /dev/null 2>&1; then
+  pass "save-state: malformed JSON exits 0"
+else
+  fail "save-state: malformed JSON should exit 0"
+fi
+
+# Test 3: fail-safe — missing transcript file
+payload=$(python3 -c "import json; print(json.dumps({'session_id':'x','transcript_path':'/nonexistent/path','cwd':'$cg_tmp/repo','hook_event_name':'PreCompact','trigger':'manual'}))")
+if printf '%s' "$payload" | "$CG_SAVE" > /dev/null 2>&1; then
+  pass "save-state: missing transcript exits 0"
+else
+  fail "save-state: missing transcript should exit 0"
+fi
+[ ! -d "$cg_tmp/repo/.papercuts/compact-snapshots" ] && pass "save-state: no snapshot written when transcript missing" || fail "save-state: should not write snapshot when transcript missing"
+
+# Test 4: writes snapshot with current task (last user msg, not first)
+cat > "$cg_tmp/transcript-1.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"First task: do thing A."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working on A."}]}}
+{"type":"user","message":{"role":"user","content":"Now switch to thing B."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Switching to B."}]}}
+EOF
+run_save "$cg_tmp/transcript-1.jsonl" "manual"
+snap=$(ls "$cg_tmp/repo/.papercuts/compact-snapshots/"*.md 2>/dev/null | head -1)
+if [ -n "$snap" ] && grep -q "Now switch to thing B" "$snap"; then
+  pass "save-state: captures most-recent user message (not first)"
+else
+  fail "save-state: did not capture latest user message"
+fi
+grep -q "manual-compact" "$snap" 2>/dev/null && pass "save-state: records trigger=manual" || fail "save-state: trigger not recorded"
+
+# Test 5: extracts active todos, skips completed
+rm -rf "$cg_tmp/repo/.papercuts"
+cat > "$cg_tmp/transcript-2.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"Refactor auth."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"Replace cookies","status":"in_progress","activeForm":"Replacing cookies"},{"content":"Update tests","status":"pending","activeForm":"Updating"},{"content":"Old work","status":"completed","activeForm":"Done"}]}}]}}
+EOF
+run_save "$cg_tmp/transcript-2.jsonl" "auto"
+snap=$(ls "$cg_tmp/repo/.papercuts/compact-snapshots/"*.md 2>/dev/null | head -1)
+if grep -q "in_progress.* Replace cookies" "$snap" && grep -q "pending.* Update tests" "$snap"; then
+  pass "save-state: captures pending + in_progress todos"
+else
+  fail "save-state: did not capture active todos"
+fi
+if ! grep -q "Old work" "$snap"; then
+  pass "save-state: skips completed todos"
+else
+  fail "save-state: included completed todo (should skip)"
+fi
+
+# Test 6: captures files from Edit/Write tool uses
+rm -rf "$cg_tmp/repo/.papercuts"
+cat > "$cg_tmp/transcript-3.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"Edit some files."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/auth.ts"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"src/new.ts"}}]}}
+EOF
+run_save "$cg_tmp/transcript-3.jsonl" "auto"
+snap=$(ls "$cg_tmp/repo/.papercuts/compact-snapshots/"*.md 2>/dev/null | head -1)
+if grep -q "src/auth.ts" "$snap" && grep -q "src/new.ts" "$snap"; then
+  pass "save-state: captures Edit and Write file paths"
+else
+  fail "save-state: missed file paths"
+fi
+
+# Test 7: skip silently when transcript has nothing useful
+rm -rf "$cg_tmp/repo/.papercuts"
+cat > "$cg_tmp/transcript-4.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":""}}
+EOF
+run_save "$cg_tmp/transcript-4.jsonl" "auto"
+snap_count=$(ls "$cg_tmp/repo/.papercuts/compact-snapshots/"*.md 2>/dev/null | wc -l | tr -d ' ')
+[ "$snap_count" = "0" ] && pass "save-state: skips when no useful content" || fail "save-state: wrote snapshot when nothing useful (got $snap_count)"
+
+# Test 8: snapshot pruning — keeps at most 5
+rm -rf "$cg_tmp/repo/.papercuts"
+cat > "$cg_tmp/transcript-5.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"do thing"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+EOF
+for i in 1 2 3 4 5 6 7; do
+  # Force unique timestamps by appending a sleep then a fixed run
+  run_save "$cg_tmp/transcript-5.jsonl" "auto"
+  sleep 1.1
+done
+snap_count=$(ls "$cg_tmp/repo/.papercuts/compact-snapshots/"*.md 2>/dev/null | wc -l | tr -d ' ')
+[ "$snap_count" = "5" ] && pass "save-state: prunes to 5 most-recent" || fail "save-state: expected 5 snapshots, got $snap_count"
+
+#-----------------------------------------------------------------------
+section "compact-guard — load-state.sh behavior"
+#-----------------------------------------------------------------------
+
+# Test 9: silent when source != "compact"
+payload=$(python3 -c "
+import json
+print(json.dumps({
+  'session_id': 'x',
+  'transcript_path': '$cg_tmp/transcript-1.jsonl',
+  'cwd': '$cg_tmp/repo',
+  'hook_event_name': 'SessionStart',
+  'source': 'startup',
+  'model': 'claude-opus-4-7',
+}))")
+out=$(printf '%s' "$payload" | "$CG_LOAD")
+[ -z "$out" ] && pass "load-state: silent when source=startup" || fail "load-state: should be silent when source=startup (got: $out)"
+
+# Test 10: silent when source=resume
+payload=$(python3 -c "import json; print(json.dumps({'session_id':'x','transcript_path':'$cg_tmp/transcript-1.jsonl','cwd':'$cg_tmp/repo','hook_event_name':'SessionStart','source':'resume','model':'m'}))")
+out=$(printf '%s' "$payload" | "$CG_LOAD")
+[ -z "$out" ] && pass "load-state: silent when source=resume" || fail "load-state: should be silent when source=resume"
+
+# Test 11: silent when source=clear
+payload=$(python3 -c "import json; print(json.dumps({'session_id':'x','transcript_path':'$cg_tmp/transcript-1.jsonl','cwd':'$cg_tmp/repo','hook_event_name':'SessionStart','source':'clear','model':'m'}))")
+out=$(printf '%s' "$payload" | "$CG_LOAD")
+[ -z "$out" ] && pass "load-state: silent when source=clear" || fail "load-state: should be silent when source=clear"
+
+# Test 12: emits snapshot when source=compact
+payload=$(python3 -c "import json; print(json.dumps({'session_id':'x','transcript_path':'$cg_tmp/transcript-1.jsonl','cwd':'$cg_tmp/repo','hook_event_name':'SessionStart','source':'compact','model':'m'}))")
+out=$(printf '%s' "$payload" | "$CG_LOAD")
+if echo "$out" | grep -q "Post-compact state restored"; then
+  pass "load-state: prints header when source=compact"
+else
+  fail "load-state: missing header for source=compact"
+fi
+if echo "$out" | grep -q "compact-guard snapshot"; then
+  pass "load-state: includes snapshot content when source=compact"
+else
+  fail "load-state: missing snapshot content for source=compact"
+fi
+
+# Test 13: silent when no snapshots exist
+rm -rf "$cg_tmp/repo/.papercuts/compact-snapshots"
+payload=$(python3 -c "import json; print(json.dumps({'session_id':'x','transcript_path':'$cg_tmp/transcript-1.jsonl','cwd':'$cg_tmp/repo','hook_event_name':'SessionStart','source':'compact','model':'m'}))")
+out=$(printf '%s' "$payload" | "$CG_LOAD")
+[ -z "$out" ] && pass "load-state: silent when no snapshots exist" || fail "load-state: should be silent when no snapshots"
+
+# Test 14: returns the NEWEST snapshot when multiple exist
+mkdir -p "$cg_tmp/repo/.papercuts/compact-snapshots"
+echo "OLD snapshot content here" > "$cg_tmp/repo/.papercuts/compact-snapshots/2020-01-01T00-00-00Z.md"
+echo "NEW snapshot content here" > "$cg_tmp/repo/.papercuts/compact-snapshots/2030-01-01T00-00-00Z.md"
+payload=$(python3 -c "import json; print(json.dumps({'session_id':'x','transcript_path':'$cg_tmp/transcript-1.jsonl','cwd':'$cg_tmp/repo','hook_event_name':'SessionStart','source':'compact','model':'m'}))")
+out=$(printf '%s' "$payload" | "$CG_LOAD")
+if echo "$out" | grep -q "NEW snapshot content" && ! echo "$out" | grep -q "OLD snapshot content"; then
+  pass "load-state: emits newest snapshot only"
+else
+  fail "load-state: did not emit newest snapshot (got: $out)"
+fi
+
+#-----------------------------------------------------------------------
+section "compact-guard — hooks.json registration"
+#-----------------------------------------------------------------------
+
+python3 - <<PY 2>/dev/null
+import json, sys
+with open("$REPO/hooks/hooks.json") as f:
+    h = json.load(f)
+try:
+    assert "PreCompact" in h["hooks"], "no PreCompact section"
+    pre_cmds = [c["command"] for c in h["hooks"]["PreCompact"][0]["hooks"]]
+    assert any("save-state.sh" in c for c in pre_cmds), "save-state.sh not in PreCompact hooks"
+    start_cmds = [c["command"] for c in h["hooks"]["SessionStart"][0]["hooks"]]
+    assert any("compact-guard/hooks/load-state.sh" in c for c in start_cmds), "load-state.sh not in SessionStart hooks"
+    print("OK")
+except (AssertionError, KeyError, IndexError) as e:
+    print(f"FAIL: {e}", file=sys.stderr); sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "hooks.json registers save-state (PreCompact) and load-state (SessionStart)"
+else
+  fail "hooks.json compact-guard registration"
+fi
+
+rm -rf "$cg_tmp"
+
+#-----------------------------------------------------------------------
 section "Static analysis — shellcheck"
 #-----------------------------------------------------------------------
 
@@ -1143,11 +1386,23 @@ if command -v shellcheck >/dev/null 2>&1; then
   else
     fail "shellcheck passes on journal-load.sh"
   fi
+  if shellcheck "$CG_SAVE"; then
+    pass "shellcheck passes on save-state.sh"
+  else
+    fail "shellcheck passes on save-state.sh"
+  fi
+  if shellcheck "$CG_LOAD"; then
+    pass "shellcheck passes on load-state.sh"
+  else
+    fail "shellcheck passes on load-state.sh"
+  fi
 else
   skip "shellcheck on snapshot.sh" "shellcheck not installed"
   skip "shellcheck on verify-claims.sh" "shellcheck not installed"
   skip "shellcheck on journal-append.sh" "shellcheck not installed"
   skip "shellcheck on journal-load.sh" "shellcheck not installed"
+  skip "shellcheck on save-state.sh" "shellcheck not installed"
+  skip "shellcheck on load-state.sh" "shellcheck not installed"
 fi
 
 # Run the test runner through shellcheck too (skip SC2086 cases we already know about)
