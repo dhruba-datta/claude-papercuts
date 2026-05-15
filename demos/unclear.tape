@@ -3,48 +3,29 @@
 # Render with:    vhs demos/unclear.tape
 # Output:         demos/unclear.gif
 #
-# Style: GitHub Dark, JetBrains Mono 18pt, 1080x720 @ 4fps.
+# The actual playback is a deterministic shell script
+# (demos/scenario-unclear.sh) so the GIF is reproducible — every
+# render produces the same frames. The real skill is tested in
+# tests/run-all.sh, not here.
+#
+# Style: GitHub Dark, JetBrains Mono 16pt, 1080x720.
 
-Output demos/unclear.gif
+Output "demos/unclear.gif"
 
-Set Theme "GitHub Dark Default"
+Set Theme "GitHub Dark"
 Set FontFamily "JetBrains Mono"
-Set FontSize 18
+Set FontSize 16
 Set Width 1080
 Set Height 720
-Set TypingSpeed 50ms
 Set Padding 24
 Set PlaybackSpeed 1.0
+Set Framerate 24
 
-# --- Act 1: rich Claude session, lots of context ---
-
-Type "claude"
+Hide
+Type "clear && bash demos/scenario-unclear.sh"
 Enter
-Sleep 800ms
+Show
 
-Type "Refactor the auth middleware to drop the cookie-based session in favor of bearer tokens. Keep the rate limiter unchanged."
-Enter
-Sleep 2s
-
-# (in a real demo, this is where the recording would capture Claude's
-# actual response — for the .tape file we just simulate progress with
-# a comment block the user can replay over the real recording)
-
-# --- Act 2: the accident ---
-
-Sleep 1500ms
-Type "/clear"
-Enter
-Sleep 1500ms
-
-# Beat — empty terminal, cursor blinking, "horror"
-Sleep 2s
-
-# --- Act 3: recovery ---
-
-Type "/unclear"
-Enter
-Sleep 3s
-
-# Hold on the recap so it shows as the Twitter preview thumbnail
-Sleep 2s
+# The scenario script has its own internal pacing (`sleep` calls).
+# Wait for it to finish.
+Sleep 18s
