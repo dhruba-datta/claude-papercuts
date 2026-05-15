@@ -1,0 +1,24 @@
+{
+  "name": "claude-papercuts",
+  "version": "0.1.0",
+  "description": "Ten Claude Code skills that fix bugs Anthropic closed as 'not planned'.",
+  "author": "Dhruba Datta",
+  "license": "MIT",
+  "homepage": "https://github.com/dhruba-datta/claude-papercuts",
+  "skills": [
+    "skills/unclear"
+  ],
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/unclear/hooks/snapshot.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
