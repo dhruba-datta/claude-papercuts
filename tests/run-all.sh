@@ -21,6 +21,7 @@ CG_LOAD="$REPO/skills/compact-guard/hooks/load-state.sh"
 SS_GUARD="$REPO/skills/safe-shell/hooks/guard.sh"
 SD_LINT="$REPO/skills/skill-doctor/lint.py"
 OB_REC="$REPO/skills/onboard/recommend.py"
+SB_TEMPLATES="$REPO/skills/subagent-broker/templates.py"
 
 # Colors (disable if not a TTY)
 if [ -t 1 ]; then
@@ -1792,6 +1793,93 @@ else
 fi
 
 rm -rf "$ob_tmp"
+
+#-----------------------------------------------------------------------
+section "subagent-broker — artifact existence + frontmatter"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/skills/subagent-broker/SKILL.md" ] && pass "subagent-broker SKILL.md exists" || fail "subagent-broker SKILL.md exists"
+[ -f "$REPO/skills/subagent-broker/README.md" ] && pass "subagent-broker README.md exists" || fail "subagent-broker README.md exists"
+[ -x "$SB_TEMPLATES" ] && pass "subagent-broker templates.py is executable" || fail "subagent-broker templates.py is executable"
+[ -f "$REPO/demos/subagent-broker.gif" ] && pass "subagent-broker demo GIF exists" || fail "subagent-broker demo GIF exists"
+[ -f "$REPO/demos/subagent-broker.tape" ] && pass "subagent-broker tape exists" || fail "subagent-broker tape exists"
+[ -x "$REPO/demos/scenario-subagent-broker.sh" ] && pass "subagent-broker scenario script is executable" || fail "subagent-broker scenario script is executable"
+
+python3 - <<PY 2>/dev/null
+import re
+with open("$REPO/skills/subagent-broker/SKILL.md") as f:
+    text = f.read()
+m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+assert m
+fm = m.group(1)
+name_m = re.search(r"^name:\s*(.+?)\s*$", fm, re.MULTILINE)
+desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z][a-z0-9_-]*:|\Z)", fm, re.DOTALL | re.MULTILINE)
+assert name_m and name_m.group(1) == "subagent-broker"
+desc = re.sub(r"\s+", " ", desc_m.group(1).strip())
+assert 50 <= len(desc) <= 1024
+PY
+[ $? -eq 0 ] && pass "subagent-broker SKILL.md frontmatter is valid" || fail "subagent-broker SKILL.md frontmatter"
+
+#-----------------------------------------------------------------------
+section "subagent-broker — templates.py behavior"
+#-----------------------------------------------------------------------
+
+# Test 1: list mode shows all 5 templates
+out=$(python3 "$SB_TEMPLATES")
+for name in parallel-search single-research cross-file-audit known-target independent-verification; do
+  if echo "$out" | grep -q "$name"; then
+    pass "list: includes $name"
+  else
+    fail "list: missing $name"
+  fi
+done
+
+# Test 2: --json schema
+python3 "$SB_TEMPLATES" --json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert isinstance(d, list)
+assert len(d) == 5
+for t in d:
+    assert 'name' in t and 'use_case' in t and 'pitfall' in t and 'body' in t
+    assert len(t['body']) > 50
+" 2>/dev/null && pass "--json: 5 templates with all required fields" || fail "--json: schema check failed"
+
+# Test 3: print specific template
+out=$(python3 "$SB_TEMPLATES" parallel-search)
+echo "$out" | grep -q "^# parallel-search" && pass "templates.py parallel-search: prints header" || fail "templates.py parallel-search: missing header"
+echo "$out" | grep -q "Use case:" && pass "templates.py parallel-search: includes use case" || fail "missing use case"
+echo "$out" | grep -q "Pitfall:" && pass "templates.py parallel-search: includes pitfall" || fail "missing pitfall"
+echo "$out" | grep -q "Task(" && pass "templates.py parallel-search: includes Task() example" || fail "missing Task() example"
+
+# Test 4: unknown template → exit 1
+python3 "$SB_TEMPLATES" nonexistent-template > /dev/null 2>&1
+[ $? -ne 0 ] && pass "unknown template: exits non-zero" || fail "unknown template should exit non-zero"
+
+# Test 5: --search filters down to just the matching template(s)
+all_count=$(python3 "$SB_TEMPLATES" | grep -cE "^  [a-z]")
+search_count=$(python3 "$SB_TEMPLATES" --search research | grep -cE "^  [a-z]")
+if [ "$search_count" -lt "$all_count" ] && [ "$search_count" -ge 1 ]; then
+  pass "--search research: filters from $all_count → $search_count templates"
+else
+  fail "--search filter wrong: all=$all_count search=$search_count"
+fi
+
+# Test 6: known-target template explicitly says DON'T delegate
+out=$(python3 "$SB_TEMPLATES" known-target)
+if echo "$out" | grep -q "DO NOT DELEGATE"; then
+  pass "known-target template includes the 'DO NOT DELEGATE' directive"
+else
+  fail "known-target template missing the don't-delegate guidance"
+fi
+
+# Test 7: parallel-search mentions "PARALLEL" / single-message rule
+out=$(python3 "$SB_TEMPLATES" parallel-search)
+if echo "$out" | grep -q "PARALLEL" && echo "$out" | grep -qi "single message"; then
+  pass "parallel-search template covers PARALLEL + single-message rule"
+else
+  fail "parallel-search template missing key rules"
+fi
 
 #-----------------------------------------------------------------------
 section "Static analysis — shellcheck"
