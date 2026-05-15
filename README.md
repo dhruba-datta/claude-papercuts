@@ -36,16 +36,16 @@ Skills in this plugin are namespaced. Invoke as
 
 | # | Skill | Fixes | Status |
 |---|---|---|---|
-| 1 | [`unclear`](skills/unclear) | [`#39975`](https://github.com/anthropics/claude-code/issues/39975) — `/clear` has no undo | ✅ shipped |
-| 2 | [`done-prover`](skills/done-prover) | [`#5052`](https://github.com/anthropics/claude-code/issues/5052), [`#10628`](https://github.com/anthropics/claude-code/issues/10628), [`#20350`](https://github.com/anthropics/claude-code/issues/20350) — Claude lies about completion | ✅ shipped |
-| 3 | [`skill-budget`](skills/skill-budget) | [`#30387`](https://github.com/anthropics/claude-code/issues/30387), [`#34648`](https://github.com/anthropics/claude-code/issues/34648), [`#16575`](https://github.com/anthropics/claude-code/issues/16575) — skills silently vanish past the ~15K char budget | ✅ shipped |
-| 4 | [`amnesia-fix`](skills/amnesia-fix) | [`#14227`](https://github.com/anthropics/claude-code/issues/14227), [`#27298`](https://github.com/anthropics/claude-code/issues/27298), [`#43696`](https://github.com/anthropics/claude-code/issues/43696) — no cross-session memory | ✅ shipped |
-| 5 | `token-x-ray` | [`#39686`](https://github.com/anthropics/claude-code/issues/39686) — auto-injected plugins waste 6k+ tokens silently | planned |
-| 6 | `compact-guard` | [`#24686`](https://github.com/anthropics/claude-code/issues/24686), [`#26061`](https://github.com/anthropics/claude-code/issues/26061) — plan-mode state lost on compact | planned |
-| 7 | `safe-shell` | (UpGuard/ClaudeLog postmortems) — YOLO `rm -rf` incidents | planned |
-| 8 | `onboard` | (Medium/MindStudio reports) — new users install too many skills and churn | planned |
-| 9 | `skill-doctor` | Root cause of [`#30387`](https://github.com/anthropics/claude-code/issues/30387) — descriptions overlap with training | planned |
-| 10 | `subagent-broker` | [`#4182`](https://github.com/anthropics/claude-code/issues/4182), [`#5528`](https://github.com/anthropics/claude-code/issues/5528), [`#19077`](https://github.com/anthropics/claude-code/issues/19077) — subagent delegation broken | planned |
+| 1 | [`unclear`](skills/unclear) | [`#39975`](https://github.com/anthropics/claude-code/issues/39975) — `/clear` has no undo | ✅ |
+| 2 | [`done-prover`](skills/done-prover) | [`#5052`](https://github.com/anthropics/claude-code/issues/5052), [`#10628`](https://github.com/anthropics/claude-code/issues/10628), [`#20350`](https://github.com/anthropics/claude-code/issues/20350) — Claude lies about completion | ✅ |
+| 3 | [`skill-budget`](skills/skill-budget) | [`#30387`](https://github.com/anthropics/claude-code/issues/30387), [`#34648`](https://github.com/anthropics/claude-code/issues/34648), [`#16575`](https://github.com/anthropics/claude-code/issues/16575) — skills silently vanish past the ~15K char budget | ✅ |
+| 4 | [`amnesia-fix`](skills/amnesia-fix) | [`#14227`](https://github.com/anthropics/claude-code/issues/14227), [`#27298`](https://github.com/anthropics/claude-code/issues/27298), [`#43696`](https://github.com/anthropics/claude-code/issues/43696) — no cross-session memory | ✅ |
+| 5 | `token-x-ray` | [`#39686`](https://github.com/anthropics/claude-code/issues/39686) — auto-injected plugins waste 6k+ tokens silently | ⏳ |
+| 6 | `compact-guard` | [`#24686`](https://github.com/anthropics/claude-code/issues/24686), [`#26061`](https://github.com/anthropics/claude-code/issues/26061) — plan-mode state lost on compact | ⏳ |
+| 7 | `safe-shell` | (UpGuard/ClaudeLog postmortems) — YOLO `rm -rf` incidents | ⏳ |
+| 8 | `onboard` | (Medium/MindStudio reports) — new users install too many skills and churn | ⏳ |
+| 9 | `skill-doctor` | Root cause of [`#30387`](https://github.com/anthropics/claude-code/issues/30387) — descriptions overlap with training | ⏳ |
+| 10 | `subagent-broker` | [`#4182`](https://github.com/anthropics/claude-code/issues/4182), [`#5528`](https://github.com/anthropics/claude-code/issues/5528), [`#19077`](https://github.com/anthropics/claude-code/issues/19077) — subagent delegation broken | ⏳ |
 
 Full per-issue details in [`docs/issues.md`](docs/issues.md). One new
 papercut drops on the 1st of every month.
