@@ -20,6 +20,7 @@ CG_SAVE="$REPO/skills/compact-guard/hooks/save-state.sh"
 CG_LOAD="$REPO/skills/compact-guard/hooks/load-state.sh"
 SS_GUARD="$REPO/skills/safe-shell/hooks/guard.sh"
 SD_LINT="$REPO/skills/skill-doctor/lint.py"
+OB_REC="$REPO/skills/onboard/recommend.py"
 
 # Colors (disable if not a TTY)
 if [ -t 1 ]; then
@@ -1694,6 +1695,103 @@ assert 'path' in r and 'name' in r and 'issues' in r
 " 2>/dev/null && pass "lint --json: schema is well-formed" || fail "lint --json: schema check failed"
 
 rm -rf "$sd_tmp"
+
+#-----------------------------------------------------------------------
+section "onboard — artifact existence + frontmatter"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/skills/onboard/SKILL.md" ] && pass "onboard SKILL.md exists" || fail "onboard SKILL.md exists"
+[ -f "$REPO/skills/onboard/README.md" ] && pass "onboard README.md exists" || fail "onboard README.md exists"
+[ -x "$OB_REC" ] && pass "onboard recommend.py is executable" || fail "onboard recommend.py is executable"
+[ -f "$REPO/demos/onboard.gif" ] && pass "onboard demo GIF exists" || fail "onboard demo GIF exists"
+[ -f "$REPO/demos/onboard.tape" ] && pass "onboard tape exists" || fail "onboard tape exists"
+[ -x "$REPO/demos/scenario-onboard.sh" ] && pass "onboard scenario script is executable" || fail "onboard scenario script is executable"
+
+python3 - <<PY 2>/dev/null
+import re
+with open("$REPO/skills/onboard/SKILL.md") as f:
+    text = f.read()
+m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+assert m
+fm = m.group(1)
+name_m = re.search(r"^name:\s*(.+?)\s*$", fm, re.MULTILINE)
+desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z][a-z0-9_-]*:|\Z)", fm, re.DOTALL | re.MULTILINE)
+assert name_m and name_m.group(1) == "onboard"
+desc = re.sub(r"\s+", " ", desc_m.group(1).strip())
+assert 50 <= len(desc) <= 1024
+PY
+[ $? -eq 0 ] && pass "onboard SKILL.md frontmatter is valid" || fail "onboard SKILL.md frontmatter"
+
+#-----------------------------------------------------------------------
+section "onboard — recommend.py behavior"
+#-----------------------------------------------------------------------
+
+ob_tmp=$(mktemp -d)
+mkdir -p "$ob_tmp/home"
+
+# Test 1: --json schema with empty home
+out=$(python3 "$OB_REC" --home "$ob_tmp/home" --json)
+if echo "$out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['total'] == 9, f'total {d[\"total\"]} != 9'
+assert d['installed'] == 0
+assert d['next'] == 'safe-shell'
+assert len(d['skills']) == 9
+" 2>/dev/null; then
+  pass "recommend --json: empty home → total=9, installed=0, next=safe-shell"
+else
+  fail "recommend --json: empty home schema wrong"
+fi
+
+# Test 2: --next prints just the name
+out=$(python3 "$OB_REC" --home "$ob_tmp/home" --next --no-color)
+first_line=$(echo "$out" | head -1)
+[ "$first_line" = "safe-shell" ] && pass "recommend --next: prints next skill name" || fail "recommend --next: expected 'safe-shell', got '$first_line'"
+
+# Test 3: detect installed papercut skills
+mkdir -p "$ob_tmp/home/.claude/plugins/papercuts/skills/safe-shell"
+touch "$ob_tmp/home/.claude/plugins/papercuts/skills/safe-shell/SKILL.md"
+mkdir -p "$ob_tmp/home/.claude/plugins/papercuts/skills/token-x-ray"
+touch "$ob_tmp/home/.claude/plugins/papercuts/skills/token-x-ray/SKILL.md"
+out=$(python3 "$OB_REC" --home "$ob_tmp/home" --json)
+installed=$(echo "$out" | python3 -c "import json,sys; print(json.load(sys.stdin)['installed'])")
+next=$(echo "$out" | python3 -c "import json,sys; print(json.load(sys.stdin)['next'])")
+[ "$installed" = "2" ] && pass "recommend: detects 2 installed skills" || fail "recommend: expected installed=2, got $installed"
+[ "$next" = "amnesia-fix" ] && pass "recommend: next-to-enable advances to amnesia-fix" || fail "recommend: expected next=amnesia-fix, got $next"
+
+# Test 4: all installed → next is null
+for sk in amnesia-fix compact-guard done-prover unclear skill-doctor skill-budget subagent-broker; do
+  mkdir -p "$ob_tmp/home/.claude/plugins/papercuts/skills/$sk"
+  touch "$ob_tmp/home/.claude/plugins/papercuts/skills/$sk/SKILL.md"
+done
+out=$(python3 "$OB_REC" --home "$ob_tmp/home" --json)
+echo "$out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['installed'] == 9
+assert d['next'] is None
+" 2>/dev/null && pass "recommend: all 9 installed → next is None" || fail "recommend: all-installed case wrong"
+
+# Test 5: SKILLS list has exactly 9 entries (the other 9 papercut skills)
+count=$(python3 "$OB_REC" --home "$ob_tmp/home" --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['total'])")
+[ "$count" = "9" ] && pass "recommend: SKILLS list has 9 entries" || fail "recommend: SKILLS has '$count' entries (expected 9)"
+
+# Test 6: SKILL.md ordering matches the source-of-truth comment in the docs
+out=$(python3 "$OB_REC" --home "$ob_tmp/home" --json)
+order=$(echo "$out" | python3 -c "import json,sys; print(','.join(s['name'] for s in json.load(sys.stdin)['skills']))")
+expected="safe-shell,token-x-ray,amnesia-fix,compact-guard,done-prover,unclear,skill-doctor,skill-budget,subagent-broker"
+[ "$order" = "$expected" ] && pass "recommend: ordering is safe-shell→…→subagent-broker" || fail "recommend: order wrong: $order"
+
+# Test 7: --no-color strips ANSI escapes
+out=$(python3 "$OB_REC" --home "$ob_tmp/home" --no-color 2>&1)
+if echo "$out" | grep -q $'\033\['; then
+  fail "recommend --no-color did not strip ANSI escapes"
+else
+  pass "recommend --no-color strips ANSI"
+fi
+
+rm -rf "$ob_tmp"
 
 #-----------------------------------------------------------------------
 section "Static analysis — shellcheck"
