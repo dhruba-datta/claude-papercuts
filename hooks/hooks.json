@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/amnesia-fix/hooks/journal-load.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": ".*",
@@ -11,6 +22,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/skills/done-prover/hooks/verify-claims.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/amnesia-fix/hooks/journal-append.sh"
           }
         ]
       }

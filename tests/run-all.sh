@@ -13,6 +13,8 @@ REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOOK="$REPO/skills/unclear/hooks/snapshot.sh"
 DONE_HOOK="$REPO/skills/done-prover/hooks/verify-claims.sh"
 AUDIT="$REPO/skills/skill-budget/audit.py"
+AMNESIA_APPEND="$REPO/skills/amnesia-fix/hooks/journal-append.sh"
+AMNESIA_LOAD="$REPO/skills/amnesia-fix/hooks/journal-load.sh"
 
 # Colors (disable if not a TTY)
 if [ -t 1 ]; then
@@ -698,6 +700,211 @@ echo "$OUT_HIGH" | grep -q "✓ visible" && \
 rm -rf "$W"
 
 #-----------------------------------------------------------------------
+section "amnesia-fix — artifact existence"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/skills/amnesia-fix/SKILL.md" ] && pass "amnesia-fix SKILL.md exists" || fail "amnesia-fix SKILL.md exists"
+[ -f "$REPO/skills/amnesia-fix/README.md" ] && pass "amnesia-fix README.md exists" || fail "amnesia-fix README.md exists"
+[ -x "$AMNESIA_APPEND" ] && pass "journal-append.sh is executable" || fail "journal-append.sh is executable"
+[ -x "$AMNESIA_LOAD" ] && pass "journal-load.sh is executable" || fail "journal-load.sh is executable"
+[ -f "$REPO/demos/amnesia-fix.gif" ] && pass "amnesia-fix demo GIF exists" || fail "amnesia-fix demo GIF exists"
+[ -f "$REPO/demos/amnesia-fix.tape" ] && pass "amnesia-fix tape exists" || fail "amnesia-fix tape exists"
+[ -x "$REPO/demos/scenario-amnesia-fix.sh" ] && pass "amnesia-fix scenario is executable" || fail "amnesia-fix scenario executable"
+
+#-----------------------------------------------------------------------
+section "amnesia-fix — SKILL.md frontmatter"
+#-----------------------------------------------------------------------
+
+python3 - <<PY
+import re, sys
+try:
+    with open("$REPO/skills/amnesia-fix/SKILL.md") as f:
+        body = f.read()
+    m = re.match(r"^---\n(.*?)\n---\n", body, re.DOTALL)
+    assert m, "missing frontmatter"
+    fm = m.group(1)
+    name_m = re.search(r"^name:\s*(\S+)", fm, re.MULTILINE)
+    assert name_m and name_m.group(1) == "amnesia-fix", "name must be 'amnesia-fix'"
+    desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z-]+:|\Z)", fm, re.DOTALL | re.MULTILINE)
+    assert desc_m, "description missing"
+    desc = desc_m.group(1).strip()
+    assert 50 < len(desc) < 1024, f"description {len(desc)} chars out of useful range"
+    print(f"OK (desc={len(desc)} chars)")
+except AssertionError as e:
+    print(f"FAIL: {e}", file=sys.stderr); sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "amnesia-fix SKILL.md frontmatter is valid"
+else
+  fail "amnesia-fix SKILL.md frontmatter"
+fi
+
+#-----------------------------------------------------------------------
+section "amnesia-fix — journal-append.sh fail-safe"
+#-----------------------------------------------------------------------
+
+EXIT=$(printf '' | "$AMNESIA_APPEND" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "append: exit 0 on empty stdin" || fail "append empty stdin (got $EXIT)"
+
+EXIT=$(printf 'garbage {{{' | "$AMNESIA_APPEND" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "append: exit 0 on malformed JSON" || fail "append malformed (got $EXIT)"
+
+EXIT=$(printf '{"transcript_path":"/nope","cwd":"/tmp"}' | "$AMNESIA_APPEND" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "append: exit 0 on missing transcript file" || fail "append missing transcript"
+
+EXIT=$(printf '{"transcript_path":"/tmp","cwd":"/nope"}' | "$AMNESIA_APPEND" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "append: exit 0 on missing cwd" || fail "append missing cwd"
+
+#-----------------------------------------------------------------------
+section "amnesia-fix — journal-append.sh extraction"
+#-----------------------------------------------------------------------
+
+# Case A: inline decisions/next/blockers + edited file → all extracted
+W=$(mktemp -d); cd "$W" && git init -q
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"refactor auth to bearer tokens"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/auth.ts"}}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done. Decision: keep rate limiter. Decision: use existing token store. Next: migration to invalidate cookies. Blocker: staging access."}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+echo "$PAYLOAD" | "$AMNESIA_APPEND" >/dev/null
+cd /tmp
+[ -f "$W/.papercuts/journal.md" ] && pass "append: journal.md written" || fail "append: journal.md written"
+grep -q "Decision" "$W/.papercuts/journal.md" 2>/dev/null && pass "append: extracts inline 'Decision:' markers" || fail "append: decisions extracted"
+grep -q "keep rate limiter" "$W/.papercuts/journal.md" 2>/dev/null && pass "append: 1st decision captured" || fail "1st decision"
+grep -q "use existing token store" "$W/.papercuts/journal.md" 2>/dev/null && pass "append: 2nd decision captured" || fail "2nd decision"
+grep -q "migration to invalidate cookies" "$W/.papercuts/journal.md" 2>/dev/null && pass "append: Next captured" || fail "next captured"
+grep -q "staging access" "$W/.papercuts/journal.md" 2>/dev/null && pass "append: Blocker captured" || fail "blocker captured"
+grep -q "src/auth.ts" "$W/.papercuts/journal.md" 2>/dev/null && pass "append: edited file captured" || fail "file captured"
+rm -rf "$W"
+
+# Case B: bulleted list extraction
+W=$(mktemp -d); cd "$W" && git init -q
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"setup"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Summary:\n- Decision: use Postgres\n- Next: add migration script\n- Blocker: schema not finalized"}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+echo "$PAYLOAD" | "$AMNESIA_APPEND" >/dev/null
+cd /tmp
+grep -q "use Postgres" "$W/.papercuts/journal.md" 2>/dev/null && pass "append: bulleted decision captured" || fail "bulleted decision"
+grep -q "add migration script" "$W/.papercuts/journal.md" 2>/dev/null && pass "append: bulleted next captured" || fail "bulleted next"
+rm -rf "$W"
+
+# Case C: nothing to journal → silent (no journal file)
+W=$(mktemp -d); cd "$W" && git init -q
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello there."}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+echo "$PAYLOAD" | "$AMNESIA_APPEND" >/dev/null
+cd /tmp
+# Topic-only triggers journalling, but expected to be minimal
+[ -f "$W/.papercuts/journal.md" ] && pass "append: minimal trivial-exchange entry created" || fail "minimal entry not created"
+rm -rf "$W"
+
+# Case D: append accumulates (entries grow, not overwrite)
+W=$(mktemp -d); cd "$W" && git init -q
+for i in 1 2 3; do
+  cat > "$W/t.jsonl" <<EOF
+{"type":"user","message":{"role":"user","content":"task $i"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Decision: handled task $i."}]}}
+EOF
+  echo "$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")" | "$AMNESIA_APPEND" >/dev/null
+  sleep 1  # ensure timestamps differ
+done
+cd /tmp
+COUNT=$(grep -c "^## " "$W/.papercuts/journal.md" 2>/dev/null || echo 0)
+[ "$COUNT" = "3" ] && pass "append: 3 sequential calls create 3 entries" || fail "append accumulation (got $COUNT entries)"
+rm -rf "$W"
+
+#-----------------------------------------------------------------------
+section "amnesia-fix — journal-load.sh"
+#-----------------------------------------------------------------------
+
+# Case A: no journal → silent
+W=$(mktemp -d)
+PAYLOAD=$(printf '{"cwd":"%s","source":"startup"}' "$W")
+OUT=$(echo "$PAYLOAD" | "$AMNESIA_LOAD")
+[ -z "$OUT" ] && pass "load: silent when no journal exists" || fail "load: should be silent (got: $OUT)"
+rm -rf "$W"
+
+# Case B: journal with 5 entries → output last 3
+W=$(mktemp -d)
+mkdir -p "$W/.papercuts"
+cat > "$W/.papercuts/journal.md" <<'EOF'
+## 2026-05-10 10:00 UTC | main | first
+- Decisions:
+  - alpha
+
+## 2026-05-11 10:00 UTC | main | second
+- Decisions:
+  - beta
+
+## 2026-05-12 10:00 UTC | main | third
+- Decisions:
+  - gamma
+
+## 2026-05-13 10:00 UTC | main | fourth
+- Decisions:
+  - delta
+
+## 2026-05-14 10:00 UTC | main | fifth
+- Decisions:
+  - epsilon
+EOF
+PAYLOAD=$(printf '{"cwd":"%s","source":"startup"}' "$W")
+OUT=$(echo "$PAYLOAD" | "$AMNESIA_LOAD")
+echo "$OUT" | grep -q "epsilon" && pass "load: includes newest entry (epsilon)" || fail "load: epsilon"
+echo "$OUT" | grep -q "delta"   && pass "load: includes second-newest (delta)" || fail "load: delta"
+echo "$OUT" | grep -q "gamma"   && pass "load: includes third-newest (gamma)" || fail "load: gamma"
+# Older entries (alpha, beta) should NOT be in the output
+! echo "$OUT" | grep -q "alpha" && pass "load: omits 4th-oldest (alpha)" || fail "load: should omit alpha"
+! echo "$OUT" | grep -q "beta"  && pass "load: omits oldest (beta)" || fail "load: should omit beta"
+rm -rf "$W"
+
+# Case C: source field is reflected in output
+W=$(mktemp -d); mkdir -p "$W/.papercuts"
+echo "## 2026-05-14 10:00 UTC | main | x" > "$W/.papercuts/journal.md"
+PAYLOAD=$(printf '{"cwd":"%s","source":"compact"}' "$W")
+OUT=$(echo "$PAYLOAD" | "$AMNESIA_LOAD")
+echo "$OUT" | grep -q "compact" && pass "load: header mentions source ('compact')" || fail "load: source"
+rm -rf "$W"
+
+# Case D: load fail-safe — bad payload doesn't crash
+EXIT=$(printf '' | "$AMNESIA_LOAD" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "load: exit 0 on empty stdin" || fail "load empty stdin"
+
+EXIT=$(printf 'garbage' | "$AMNESIA_LOAD" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "load: exit 0 on malformed JSON" || fail "load malformed"
+
+#-----------------------------------------------------------------------
+section "amnesia-fix — hooks.json registration"
+#-----------------------------------------------------------------------
+
+python3 - <<PY
+import json, sys
+try:
+    with open("$REPO/hooks/hooks.json") as f:
+        h = json.load(f)
+    # Stop now has 3 commands
+    stop_cmds = [c["command"] for c in h["hooks"]["Stop"][0]["hooks"]]
+    assert any("journal-append.sh" in c for c in stop_cmds), "journal-append.sh not in Stop hooks"
+    # SessionStart has 1 command
+    start_cmds = [c["command"] for c in h["hooks"]["SessionStart"][0]["hooks"]]
+    assert any("journal-load.sh" in c for c in start_cmds), "journal-load.sh not in SessionStart hooks"
+    print("OK")
+except (AssertionError, KeyError, IndexError) as e:
+    print(f"FAIL: {e}", file=sys.stderr); sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "hooks.json registers journal-append (Stop) and journal-load (SessionStart)"
+else
+  fail "hooks.json amnesia-fix registration"
+fi
+
+#-----------------------------------------------------------------------
 section "Static analysis — shellcheck"
 #-----------------------------------------------------------------------
 
@@ -712,9 +919,21 @@ if command -v shellcheck >/dev/null 2>&1; then
   else
     fail "shellcheck passes on verify-claims.sh"
   fi
+  if shellcheck "$AMNESIA_APPEND"; then
+    pass "shellcheck passes on journal-append.sh"
+  else
+    fail "shellcheck passes on journal-append.sh"
+  fi
+  if shellcheck "$AMNESIA_LOAD"; then
+    pass "shellcheck passes on journal-load.sh"
+  else
+    fail "shellcheck passes on journal-load.sh"
+  fi
 else
   skip "shellcheck on snapshot.sh" "shellcheck not installed"
   skip "shellcheck on verify-claims.sh" "shellcheck not installed"
+  skip "shellcheck on journal-append.sh" "shellcheck not installed"
+  skip "shellcheck on journal-load.sh" "shellcheck not installed"
 fi
 
 # Run the test runner through shellcheck too (skip SC2086 cases we already know about)
