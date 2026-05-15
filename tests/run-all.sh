@@ -15,6 +15,7 @@ DONE_HOOK="$REPO/skills/done-prover/hooks/verify-claims.sh"
 AUDIT="$REPO/skills/skill-budget/audit.py"
 AMNESIA_APPEND="$REPO/skills/amnesia-fix/hooks/journal-append.sh"
 AMNESIA_LOAD="$REPO/skills/amnesia-fix/hooks/journal-load.sh"
+TX_AUDIT="$REPO/skills/token-x-ray/audit.py"
 
 # Colors (disable if not a TTY)
 if [ -t 1 ]; then
@@ -903,6 +904,219 @@ if [ $? -eq 0 ]; then
 else
   fail "hooks.json amnesia-fix registration"
 fi
+
+#-----------------------------------------------------------------------
+section "token-x-ray — artifact existence"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/skills/token-x-ray/SKILL.md" ] && pass "token-x-ray SKILL.md exists" || fail "token-x-ray SKILL.md exists"
+[ -f "$REPO/skills/token-x-ray/README.md" ] && pass "token-x-ray README.md exists" || fail "token-x-ray README.md exists"
+[ -x "$TX_AUDIT" ] && pass "token-x-ray audit.py is executable" || fail "token-x-ray audit.py is executable"
+[ -f "$REPO/demos/token-x-ray.gif" ] && pass "token-x-ray demo GIF exists" || fail "token-x-ray demo GIF exists"
+[ -f "$REPO/demos/token-x-ray.tape" ] && pass "token-x-ray tape exists" || fail "token-x-ray tape exists"
+[ -x "$REPO/demos/scenario-token-x-ray.sh" ] && pass "token-x-ray scenario script is executable" || fail "token-x-ray scenario script is executable"
+
+#-----------------------------------------------------------------------
+section "token-x-ray — SKILL.md frontmatter"
+#-----------------------------------------------------------------------
+
+python3 - <<PY 2>/dev/null
+import re, sys
+with open("$REPO/skills/token-x-ray/SKILL.md") as f:
+    text = f.read()
+m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+assert m, "no frontmatter"
+fm = m.group(1)
+name_m = re.search(r"^name:\s*(.+?)\s*$", fm, re.MULTILINE)
+desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z][a-z0-9_-]*:|\Z)", fm, re.DOTALL | re.MULTILINE)
+assert name_m and name_m.group(1) == "token-x-ray", "name must be 'token-x-ray'"
+assert desc_m, "description missing"
+desc = re.sub(r"\s+", " ", desc_m.group(1).strip())
+assert 50 <= len(desc) <= 1024, f"description length {len(desc)} not in [50,1024]"
+PY
+if [ $? -eq 0 ]; then
+  pass "token-x-ray SKILL.md frontmatter is valid"
+else
+  fail "token-x-ray SKILL.md frontmatter"
+fi
+
+#-----------------------------------------------------------------------
+section "token-x-ray — audit.py behavior"
+#-----------------------------------------------------------------------
+
+# Test 1: empty inputs → 0 tokens, exit 0, no crash
+tx_tmp=$(mktemp -d)
+mkdir -p "$tx_tmp/home" "$tx_tmp/cwd"
+if python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --no-color > "$tx_tmp/out.txt" 2>&1; then
+  if grep -q "Total estimated: 0 tokens" "$tx_tmp/out.txt"; then
+    pass "empty inputs → 0 tokens"
+  else
+    fail "empty inputs should report 0 tokens (got: $(grep -E '^Total' "$tx_tmp/out.txt"))"
+  fi
+else
+  fail "audit.py exited non-zero on empty inputs"
+fi
+
+# Test 2: --json on empty inputs is parseable + has expected shape
+if python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json > "$tx_tmp/out.json" 2>&1; then
+  if python3 -c "
+import json, sys
+d = json.load(open('$tx_tmp/out.json'))
+assert d['total_tokens'] == 0
+assert d['chars_per_token'] == 4
+assert d['by_category'] == {}
+assert d['sources'] == []
+assert d['top_cuts'] == []
+" 2>/dev/null; then
+    pass "--json empty: schema is correct"
+  else
+    fail "--json empty: schema mismatch"
+  fi
+else
+  fail "audit.py --json exited non-zero on empty inputs"
+fi
+
+# Test 3: MCP discovery from .claude.json
+cat > "$tx_tmp/home/.claude.json" <<'EOF'
+{"mcpServers": {"github": {"command": "npx"}, "filesystem": {"command": "npx"}}}
+EOF
+mcp_total=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['by_category'].get('mcp',{}).get('count',0))")
+[ "$mcp_total" = "2" ] && pass "MCP discovery: 2 servers from .claude.json" || fail "MCP discovery: expected 2 servers, got $mcp_total"
+
+# Test 4: MCP discovery from project-level .mcp.json
+cat > "$tx_tmp/cwd/.mcp.json" <<'EOF'
+{"mcpServers": {"slack": {"command": "npx"}}}
+EOF
+mcp_total=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['by_category'].get('mcp',{}).get('count',0))")
+[ "$mcp_total" = "3" ] && pass "MCP discovery: includes .mcp.json (3 total)" || fail "MCP discovery from .mcp.json: expected 3 total, got $mcp_total"
+
+# Test 5: each MCP server uses the per-server heuristic (1500 tok)
+mcp_tokens=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['by_category'].get('mcp',{}).get('tokens',0))")
+[ "$mcp_tokens" = "4500" ] && pass "MCP heuristic: 3 servers × 1500 = 4500 tokens" || fail "MCP heuristic: expected 4500 tokens, got $mcp_tokens"
+
+# Test 6: CLAUDE.md discovery (user + project)
+mkdir -p "$tx_tmp/home/.claude"
+echo "user-level rules here" > "$tx_tmp/home/.claude/CLAUDE.md"
+echo "project-level rules here, somewhat longer" > "$tx_tmp/cwd/CLAUDE.md"
+cmd_count=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['by_category'].get('claude_md',{}).get('count',0))")
+[ "$cmd_count" = "2" ] && pass "CLAUDE.md discovery: user + project" || fail "CLAUDE.md discovery: expected 2, got $cmd_count"
+
+# Test 7: token estimate uses 4-char heuristic
+text="0123456789ABCDEFabcdef" # exactly 22 chars → 5 tokens (22/4 floor)
+echo "$text" > "$tx_tmp/cwd/CLAUDE.md"
+proj_md_tokens=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for s in d['sources']:
+    if s['category']=='claude_md' and s['scope']=='project':
+        print(s['tokens']); break
+")
+# 22 chars + newline = 23 chars → 23//4 = 5
+[ "$proj_md_tokens" = "5" ] && pass "token estimate: 23 chars → 5 tokens (4-char heuristic)" || fail "token estimate: expected 5, got $proj_md_tokens"
+
+# Test 8: skills discovery from .claude/skills
+mkdir -p "$tx_tmp/cwd/.claude/skills/test-skill"
+cat > "$tx_tmp/cwd/.claude/skills/test-skill/SKILL.md" <<'EOF'
+---
+name: test-skill
+description: A test skill that does test things for testing purposes only.
+---
+# test
+EOF
+sk_count=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['by_category'].get('skill',{}).get('count',0))")
+[ "$sk_count" = "1" ] && pass "skills discovery: project skill detected" || fail "skills discovery: expected 1, got $sk_count"
+
+# Test 9: agents discovery
+mkdir -p "$tx_tmp/cwd/.claude/agents"
+cat > "$tx_tmp/cwd/.claude/agents/researcher.md" <<'EOF'
+---
+name: researcher
+description: An agent that researches things in the codebase.
+---
+# researcher
+EOF
+ag_count=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['by_category'].get('agent',{}).get('count',0))")
+[ "$ag_count" = "1" ] && pass "agents discovery: project agent detected" || fail "agents discovery: expected 1, got $ag_count"
+
+# Test 10: commands discovery
+mkdir -p "$tx_tmp/cwd/.claude/commands"
+cat > "$tx_tmp/cwd/.claude/commands/build.md" <<'EOF'
+---
+name: build
+description: Builds the project.
+---
+# build
+EOF
+cm_count=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['by_category'].get('command',{}).get('count',0))")
+[ "$cm_count" = "1" ] && pass "commands discovery: project command detected" || fail "commands discovery: expected 1, got $cm_count"
+
+# Test 11: top_cuts excludes CLAUDE.md (user-curated) but includes mcp/skill/agent/command
+top_cats=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+cats = set(c['category'] for c in d['top_cuts'])
+print(','.join(sorted(cats)))
+")
+case "$top_cats" in
+  *claude_md*) fail "top_cuts should NOT include claude_md (got: $top_cats)" ;;
+  "") fail "top_cuts is empty (expected mcp at minimum)" ;;
+  *) pass "top_cuts excludes claude_md (got: $top_cats)" ;;
+esac
+
+# Test 12: malformed JSON files don't crash
+echo "this is not json {{ " > "$tx_tmp/home/.claude.json"
+if python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json > /dev/null 2>&1; then
+  pass "malformed JSON: audit.py survives gracefully"
+else
+  fail "malformed JSON crashed audit.py"
+fi
+
+# Test 13: nonexistent --cwd doesn't crash
+if python3 "$TX_AUDIT" --cwd /nonexistent/path/abc123 --home "$tx_tmp/home" --json > /dev/null 2>&1; then
+  pass "nonexistent --cwd: audit.py survives"
+else
+  fail "nonexistent --cwd crashed audit.py"
+fi
+
+# Test 14: --no-color strips ANSI escape codes
+out=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --no-color 2>&1)
+if echo "$out" | grep -q $'\033\['; then
+  fail "--no-color did not strip ANSI escapes"
+else
+  pass "--no-color strips ANSI escape codes"
+fi
+
+# Test 15: text output mentions all expected categories when present
+out=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --no-color 2>&1)
+missing=""
+for label in "MCP servers" "CLAUDE.md" "Skills" "Subagents" "Slash commands"; do
+  if ! echo "$out" | grep -q "$label"; then
+    missing="$missing $label"
+  fi
+done
+[ -z "$missing" ] && pass "text output mentions all 5 categories when populated" || fail "text output missing labels:$missing"
+
+# Test 16: source counts are correct across all categories
+totals=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+cats = d['by_category']
+print(cats.get('mcp',{}).get('count',0), cats.get('claude_md',{}).get('count',0), cats.get('skill',{}).get('count',0), cats.get('agent',{}).get('count',0), cats.get('command',{}).get('count',0))
+")
+# 1 mcp (slack survives in .mcp.json after .claude.json was broken in test 12)
+# + 2 claude_md + 1 skill + 1 agent + 1 command
+[ "$totals" = "1 2 1 1 1" ] && pass "category counts match expected fixture" || fail "category counts wrong: got '$totals', expected '1 2 1 1 1'"
+
+# Test 17: --json output is sorted by tokens desc
+order=$(python3 "$TX_AUDIT" --home "$tx_tmp/home" --cwd "$tx_tmp/cwd" --json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+toks = [s['tokens'] for s in d['sources']]
+print('sorted' if toks == sorted(toks, reverse=True) else 'unsorted')
+")
+[ "$order" = "sorted" ] && pass "sources are sorted by tokens descending" || fail "sources not sorted by tokens desc"
+
+rm -rf "$tx_tmp"
 
 #-----------------------------------------------------------------------
 section "Static analysis — shellcheck"

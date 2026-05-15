@@ -40,7 +40,7 @@ Skills in this plugin are namespaced. Invoke as
 | 2 | [`done-prover`](skills/done-prover) | [`#5052`](https://github.com/anthropics/claude-code/issues/5052), [`#10628`](https://github.com/anthropics/claude-code/issues/10628), [`#20350`](https://github.com/anthropics/claude-code/issues/20350) — Claude lies about completion | ✅ |
 | 3 | [`skill-budget`](skills/skill-budget) | [`#30387`](https://github.com/anthropics/claude-code/issues/30387), [`#34648`](https://github.com/anthropics/claude-code/issues/34648), [`#16575`](https://github.com/anthropics/claude-code/issues/16575) — skills silently vanish past the ~15K char budget | ✅ |
 | 4 | [`amnesia-fix`](skills/amnesia-fix) | [`#14227`](https://github.com/anthropics/claude-code/issues/14227), [`#27298`](https://github.com/anthropics/claude-code/issues/27298), [`#43696`](https://github.com/anthropics/claude-code/issues/43696) — no cross-session memory | ✅ |
-| 5 | `token-x-ray` | [`#39686`](https://github.com/anthropics/claude-code/issues/39686) — auto-injected plugins waste 6k+ tokens silently | ⏳ |
+| 5 | [`token-x-ray`](skills/token-x-ray) | [`#39686`](https://github.com/anthropics/claude-code/issues/39686) — auto-injected plugins waste 6k+ tokens silently | ✅ |
 | 6 | `compact-guard` | [`#24686`](https://github.com/anthropics/claude-code/issues/24686), [`#26061`](https://github.com/anthropics/claude-code/issues/26061) — plan-mode state lost on compact | ⏳ |
 | 7 | `safe-shell` | (UpGuard/ClaudeLog postmortems) — YOLO `rm -rf` incidents | ⏳ |
 | 8 | `onboard` | (Medium/MindStudio reports) — new users install too many skills and churn | ⏳ |
@@ -75,7 +75,7 @@ you don't have to.
 bash tests/run-all.sh
 ```
 
-119 tests covering plugin schema, all Stop hooks' behavior
+143 tests covering plugin schema, all Stop hooks' behavior
 (snapshot pruning, claim detection, journal append/load),
 audit.py discovery + budget logic, regex extraction (bulleted
 and inline), unicode/control-char fidelity, concurrent
