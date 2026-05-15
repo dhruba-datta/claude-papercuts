@@ -19,6 +19,7 @@ TX_AUDIT="$REPO/skills/token-x-ray/audit.py"
 CG_SAVE="$REPO/skills/compact-guard/hooks/save-state.sh"
 CG_LOAD="$REPO/skills/compact-guard/hooks/load-state.sh"
 SS_GUARD="$REPO/skills/safe-shell/hooks/guard.sh"
+SD_LINT="$REPO/skills/skill-doctor/lint.py"
 
 # Colors (disable if not a TTY)
 if [ -t 1 ]; then
@@ -1512,6 +1513,187 @@ except (AssertionError, KeyError, IndexError) as e:
     print(f"FAIL: {e}", file=sys.stderr); sys.exit(1)
 PY
 [ $? -eq 0 ] && pass "hooks.json registers safe-shell guard.sh (matcher: Bash)" || fail "hooks.json safe-shell registration"
+
+#-----------------------------------------------------------------------
+section "skill-doctor — artifact existence + frontmatter"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/skills/skill-doctor/SKILL.md" ] && pass "skill-doctor SKILL.md exists" || fail "skill-doctor SKILL.md exists"
+[ -f "$REPO/skills/skill-doctor/README.md" ] && pass "skill-doctor README.md exists" || fail "skill-doctor README.md exists"
+[ -x "$SD_LINT" ] && pass "skill-doctor lint.py is executable" || fail "skill-doctor lint.py is executable"
+[ -f "$REPO/demos/skill-doctor.gif" ] && pass "skill-doctor demo GIF exists" || fail "skill-doctor demo GIF exists"
+[ -f "$REPO/demos/skill-doctor.tape" ] && pass "skill-doctor tape exists" || fail "skill-doctor tape exists"
+[ -x "$REPO/demos/scenario-skill-doctor.sh" ] && pass "skill-doctor scenario script is executable" || fail "skill-doctor scenario script is executable"
+
+python3 - <<PY 2>/dev/null
+import re
+with open("$REPO/skills/skill-doctor/SKILL.md") as f:
+    text = f.read()
+m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+assert m, "no frontmatter"
+fm = m.group(1)
+name_m = re.search(r"^name:\s*(.+?)\s*$", fm, re.MULTILINE)
+desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z][a-z0-9_-]*:|\Z)", fm, re.DOTALL | re.MULTILINE)
+assert name_m and name_m.group(1) == "skill-doctor"
+assert desc_m
+desc = re.sub(r"\s+", " ", desc_m.group(1).strip())
+assert 50 <= len(desc) <= 1024, f"desc len {len(desc)}"
+PY
+[ $? -eq 0 ] && pass "skill-doctor SKILL.md frontmatter is valid" || fail "skill-doctor SKILL.md frontmatter"
+
+#-----------------------------------------------------------------------
+section "skill-doctor — lint.py behavior"
+#-----------------------------------------------------------------------
+
+sd_tmp=$(mktemp -d)
+
+# Test 1: lint a clean SKILL.md → 0 issues, exit 0
+cat > "$sd_tmp/clean.md" <<'EOF'
+---
+name: my-clean-skill
+description: Use this skill when the user wants to deploy a stacked-diff rebase against the main branch. Validates each commit against the CI status, requests fixup commits as needed, and pushes the rebased stack atomically. Useful for refactoring chains of 3+ commits without losing review-history.
+---
+# body
+EOF
+if python3 "$SD_LINT" "$sd_tmp/clean.md" --no-color --json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+r = d['reports'][0]
+assert r['ok'] is True
+assert all(i['severity'] != 'error' for i in r['issues'])
+" 2>/dev/null; then
+  pass "lint: clean SKILL.md → 0 errors"
+else
+  fail "lint: clean SKILL.md should pass"
+fi
+
+# Test 2: missing name → error
+cat > "$sd_tmp/no-name.md" <<'EOF'
+---
+description: This is a perfectly fine length description but has no name field at all which should trigger the no-name error from the linter.
+---
+EOF
+out=$(python3 "$SD_LINT" "$sd_tmp/no-name.md" --json 2>&1)
+if echo "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(i['code']=='no-name' for i in d['reports'][0]['issues']) else 1)" 2>/dev/null; then
+  pass "lint: missing name → no-name error"
+else
+  fail "lint: missing name should error"
+fi
+
+# Test 3: non-kebab name → bad-name
+cat > "$sd_tmp/bad-name.md" <<'EOF'
+---
+name: Bad_Name_Capitals_2
+description: This skill has a description that is long enough to pass the lower bound but the name is the offender being neither lowercase nor kebab-case.
+---
+EOF
+out=$(python3 "$SD_LINT" "$sd_tmp/bad-name.md" --json 2>&1)
+if echo "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(i['code']=='bad-name' for i in d['reports'][0]['issues']) else 1)" 2>/dev/null; then
+  pass "lint: non-kebab name → bad-name error"
+else
+  fail "lint: non-kebab name should error"
+fi
+
+# Test 4: description too short → desc-too-short error
+cat > "$sd_tmp/short.md" <<'EOF'
+---
+name: short
+description: too short
+---
+EOF
+out=$(python3 "$SD_LINT" "$sd_tmp/short.md" --json 2>&1)
+if echo "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(i['code']=='desc-too-short' for i in d['reports'][0]['issues']) else 1)" 2>/dev/null; then
+  pass "lint: 9-char description → desc-too-short error"
+else
+  fail "lint: short description should error"
+fi
+
+# Test 5: training overlap detected
+cat > "$sd_tmp/overlap.md" <<'EOF'
+---
+name: overlap-skill
+description: Use this skill for git operations including reading files and writing files and editing files and running shell commands across the codebase whenever you want.
+---
+EOF
+out=$(python3 "$SD_LINT" "$sd_tmp/overlap.md" --json 2>&1)
+overlap_count=$(echo "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for i in d['reports'][0]['issues'] if i['code']=='training-overlap'))")
+if [ "$overlap_count" -ge 4 ]; then
+  pass "lint: 4+ training-overlap warnings detected (got $overlap_count)"
+else
+  fail "lint: expected 4+ training-overlap warnings, got $overlap_count"
+fi
+
+# Test 6: no trigger phrase → no-trigger warning
+cat > "$sd_tmp/no-trigger.md" <<'EOF'
+---
+name: no-trigger
+description: This is a long enough description that has no triggering phrase that would tell the model when to actually route to this skill, so it should warn.
+---
+EOF
+out=$(python3 "$SD_LINT" "$sd_tmp/no-trigger.md" --json 2>&1)
+if echo "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if any(i['code']=='no-trigger' for i in d['reports'][0]['issues']) else 1)" 2>/dev/null; then
+  pass "lint: missing trigger phrase → no-trigger warning"
+else
+  fail "lint: missing trigger phrase should warn"
+fi
+
+# Test 7: vague word detected
+cat > "$sd_tmp/vague.md" <<'EOF'
+---
+name: my-helper
+description: Use this when you want a helpful utility for managing your workflow with general toolkit-style support across many tasks at once.
+---
+EOF
+out=$(python3 "$SD_LINT" "$sd_tmp/vague.md" --json 2>&1)
+vague_count=$(echo "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for i in d['reports'][0]['issues'] if i['code'].startswith('vague-')))")
+if [ "$vague_count" -ge 2 ]; then
+  pass "lint: vague words detected (got $vague_count)"
+else
+  fail "lint: expected 2+ vague-word infos, got $vague_count"
+fi
+
+# Test 8: exit code 1 when errors present, 0 when clean
+python3 "$SD_LINT" "$sd_tmp/clean.md" --no-color > /dev/null 2>&1
+[ $? -eq 0 ] && pass "lint: exit 0 for clean SKILL.md" || fail "lint: should exit 0 for clean"
+python3 "$SD_LINT" "$sd_tmp/no-name.md" --no-color > /dev/null 2>&1
+[ $? -ne 0 ] && pass "lint: exit non-zero for SKILL.md with errors" || fail "lint: should exit non-zero for errors"
+
+# Test 9: --all sweep against a synthetic home + project
+mkdir -p "$sd_tmp/home/.claude/skills/h1"
+cat > "$sd_tmp/home/.claude/skills/h1/SKILL.md" <<'EOF'
+---
+name: h1
+description: A short one
+---
+EOF
+mkdir -p "$sd_tmp/proj/.claude/skills/p1"
+cp "$sd_tmp/clean.md" "$sd_tmp/proj/.claude/skills/p1/SKILL.md"
+out=$(python3 "$SD_LINT" --all --home "$sd_tmp/home" --cwd "$sd_tmp/proj" --json 2>&1)
+total=$(echo "$out" | python3 -c "import json,sys; print(json.load(sys.stdin)['total'])")
+[ "$total" = "2" ] && pass "lint --all: discovered both home + project skills" || fail "lint --all: expected 2, got $total"
+
+# Test 10: every shipped SKILL.md in this repo passes
+errors=0
+for f in "$REPO"/skills/*/SKILL.md; do
+  python3 "$SD_LINT" "$f" --no-color > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    errors=$((errors+1))
+  fi
+done
+[ "$errors" = "0" ] && pass "lint: all shipped papercuts SKILL.mds lint clean" || fail "lint: $errors shipped SKILL.md(s) have errors"
+
+# Test 11: --json output is valid JSON with expected schema
+python3 "$SD_LINT" "$sd_tmp/clean.md" --json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert 'total' in d
+assert 'ok' in d
+assert 'reports' in d
+r = d['reports'][0]
+assert 'path' in r and 'name' in r and 'issues' in r
+" 2>/dev/null && pass "lint --json: schema is well-formed" || fail "lint --json: schema check failed"
+
+rm -rf "$sd_tmp"
 
 #-----------------------------------------------------------------------
 section "Static analysis — shellcheck"
