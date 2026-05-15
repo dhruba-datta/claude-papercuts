@@ -2,6 +2,8 @@
 
 **Fixes:** [`anthropics/claude-code#39975`](https://github.com/anthropics/claude-code/issues/39975) (OPEN as of 2026-05-15)
 
+![/claude-papercuts:unclear restoring conversation state after an accidental /clear](../../demos/unclear.gif)
+
 ## What this prevents
 
 > "Muscle memory, typo, or misclick. The session is gone. There is no

@@ -5,6 +5,8 @@
 [`anthropics/claude-code#10628`](https://github.com/anthropics/claude-code/issues/10628),
 [`anthropics/claude-code#20350`](https://github.com/anthropics/claude-code/issues/20350)
 
+![/claude-papercuts:done-prover catching a false "all tests pass" claim](../../demos/done-prover.gif)
+
 ## What this prevents
 
 > *"Tests pass because they test structure and mock implementations

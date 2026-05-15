@@ -6,12 +6,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Made for Claude Code](https://img.shields.io/badge/made%20for-Claude%20Code-orange)](https://code.claude.com)
 
-![/claude-papercuts:unclear restoring conversation state after an accidental /clear](demos/unclear.gif)
-
-![/claude-papercuts:done-prover catching a false "all tests pass" claim](demos/done-prover.gif)
-
-![/claude-papercuts:skill-budget auditing installed skills against the system-prompt budget](demos/skill-budget.gif)
-
 Anthropic's `claude-code` issue tracker has dozens of high-engagement
 bug reports closed with `not planned`. This plugin ships one skill per
 papercut. Each skill cites the GitHub issue it fixes — and gets

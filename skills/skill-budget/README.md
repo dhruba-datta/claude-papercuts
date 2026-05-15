@@ -5,6 +5,8 @@
 [`anthropics/claude-code#34648`](https://github.com/anthropics/claude-code/issues/34648),
 [`anthropics/claude-code#16575`](https://github.com/anthropics/claude-code/issues/16575)
 
+![/claude-papercuts:skill-budget auditing installed skills against the system-prompt budget](../../demos/skill-budget.gif)
+
 ## What this prevents
 
 > *"In environments with many skills (40+) and rich configuration, the
