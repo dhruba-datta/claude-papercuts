@@ -10,6 +10,8 @@
 
 ![/claude-papercuts:done-prover catching a false "all tests pass" claim](demos/done-prover.gif)
 
+![/claude-papercuts:skill-budget auditing installed skills against the system-prompt budget](demos/skill-budget.gif)
+
 Anthropic's `claude-code` issue tracker has dozens of high-engagement
 bug reports closed with `not planned`. This plugin ships one skill per
 papercut. Each skill cites the GitHub issue it fixes — and gets
@@ -42,7 +44,7 @@ Skills in this plugin are namespaced. Invoke as
 |---|---|---|---|
 | 1 | [`unclear`](skills/unclear) | [`#39975`](https://github.com/anthropics/claude-code/issues/39975) — `/clear` has no undo | ✅ shipped |
 | 2 | [`done-prover`](skills/done-prover) | [`#5052`](https://github.com/anthropics/claude-code/issues/5052), [`#10628`](https://github.com/anthropics/claude-code/issues/10628), [`#20350`](https://github.com/anthropics/claude-code/issues/20350) — Claude lies about completion | ✅ shipped |
-| 3 | `skill-budget` | [`#30387`](https://github.com/anthropics/claude-code/issues/30387), [`#34648`](https://github.com/anthropics/claude-code/issues/34648), [`#16575`](https://github.com/anthropics/claude-code/issues/16575) — skills silently vanish past the ~15K char budget | next ⏳ |
+| 3 | [`skill-budget`](skills/skill-budget) | [`#30387`](https://github.com/anthropics/claude-code/issues/30387), [`#34648`](https://github.com/anthropics/claude-code/issues/34648), [`#16575`](https://github.com/anthropics/claude-code/issues/16575) — skills silently vanish past the ~15K char budget | ✅ shipped |
 | 4 | `amnesia-fix` | [`#14227`](https://github.com/anthropics/claude-code/issues/14227), [`#27298`](https://github.com/anthropics/claude-code/issues/27298), [`#43696`](https://github.com/anthropics/claude-code/issues/43696) — no cross-session memory | planned |
 | 5 | `token-x-ray` | [`#39686`](https://github.com/anthropics/claude-code/issues/39686) — auto-injected plugins waste 6k+ tokens silently | planned |
 | 6 | `compact-guard` | [`#24686`](https://github.com/anthropics/claude-code/issues/24686), [`#26061`](https://github.com/anthropics/claude-code/issues/26061) — plan-mode state lost on compact | planned |
@@ -79,11 +81,11 @@ you don't have to.
 bash tests/run-all.sh
 ```
 
-65 tests covering plugin schema, both Stop hooks' behavior
+84 tests covering plugin schema, both Stop hooks' behavior
 (snapshot pruning, claim detection, verdict generation),
-unicode/control-char fidelity, concurrent invocations, and
-shellcheck on the shell scripts. CI runs the same suite on every
-push and PR.
+audit.py discovery + budget logic, unicode/control-char fidelity,
+concurrent invocations, and shellcheck on the shell scripts.
+CI runs the same suite on every push and PR.
 
 ## Contributing
 

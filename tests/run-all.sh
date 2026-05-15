@@ -12,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOOK="$REPO/skills/unclear/hooks/snapshot.sh"
 DONE_HOOK="$REPO/skills/done-prover/hooks/verify-claims.sh"
+AUDIT="$REPO/skills/skill-budget/audit.py"
 
 # Colors (disable if not a TTY)
 if [ -t 1 ]; then
@@ -568,6 +569,133 @@ if [ $? -eq 0 ]; then
 else
   fail "hooks.json registration"
 fi
+
+#-----------------------------------------------------------------------
+section "skill-budget — artifact existence"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/skills/skill-budget/SKILL.md" ] && pass "skill-budget SKILL.md exists" || fail "skill-budget SKILL.md exists"
+[ -f "$REPO/skills/skill-budget/README.md" ] && pass "skill-budget README.md exists" || fail "skill-budget README.md exists"
+[ -x "$AUDIT" ] && pass "audit.py is executable" || fail "audit.py is executable"
+[ -f "$REPO/demos/skill-budget.gif" ] && pass "skill-budget demo GIF exists" || fail "skill-budget demo GIF exists"
+[ -f "$REPO/demos/skill-budget.tape" ] && pass "skill-budget tape exists" || fail "skill-budget tape exists"
+[ -x "$REPO/demos/scenario-skill-budget.sh" ] && pass "skill-budget scenario script is executable" || fail "skill-budget scenario script is executable"
+
+#-----------------------------------------------------------------------
+section "skill-budget — SKILL.md frontmatter"
+#-----------------------------------------------------------------------
+
+python3 - <<PY
+import re, sys
+try:
+    with open("$REPO/skills/skill-budget/SKILL.md") as f:
+        body = f.read()
+    m = re.match(r"^---\n(.*?)\n---\n", body, re.DOTALL)
+    assert m, "missing YAML frontmatter delimiters"
+    fm = m.group(1)
+    name_m = re.search(r"^name:\s*(\S+)", fm, re.MULTILINE)
+    assert name_m and name_m.group(1) == "skill-budget", "name must be 'skill-budget'"
+    desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z-]+:|\Z)", fm, re.DOTALL | re.MULTILINE)
+    assert desc_m, "description missing"
+    desc = desc_m.group(1).strip()
+    assert 50 < len(desc) < 1024, f"description {len(desc)} chars out of useful range"
+    print(f"OK (desc={len(desc)} chars)")
+except AssertionError as e:
+    print(f"FAIL: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "skill-budget SKILL.md frontmatter is valid"
+else
+  fail "skill-budget SKILL.md frontmatter"
+fi
+
+#-----------------------------------------------------------------------
+section "skill-budget — audit.py behavior"
+#-----------------------------------------------------------------------
+
+# Helper: seed a sandbox with N skills at given char costs
+seed_sandbox() {
+  local box="$1"; shift
+  mkdir -p "$box/.claude/skills"
+  for spec in "$@"; do
+    local name="${spec%%:*}"; local desc="${spec#*:}"
+    mkdir -p "$box/.claude/skills/$name"
+    printf -- "---\nname: %s\ndescription: %s\n---\n" "$name" "$desc" > "$box/.claude/skills/$name/SKILL.md"
+  done
+}
+
+# Case A: empty sandbox → exit 0, no skills reported
+W=$(mktemp -d); mkdir -p "$W/.claude/skills"
+cd "$W"; OUT=$("$AUDIT" --no-color 2>&1); EXIT=$?
+cd /tmp
+[ "$EXIT" = "0" ] && pass "audit.py exits 0 on empty sandbox" || fail "audit.py empty sandbox exit (got $EXIT)"
+echo "$OUT" | grep -q "No skills found" && pass "audit.py reports 'No skills found' on empty" || fail "audit.py empty message"
+rm -rf "$W"
+
+# Case B: single skill under budget → all visible
+W=$(mktemp -d)
+seed_sandbox "$W" "tiny:a short description for testing"
+cd "$W"; OUT=$("$AUDIT" --budget 15000 --no-color 2>&1); EXIT=$?
+cd /tmp
+[ "$EXIT" = "0" ] && pass "audit.py exits 0 with 1 skill" || fail "audit.py 1-skill exit"
+echo "$OUT" | grep -q "✓ visible" && pass "single small skill shows as visible" || fail "small skill visibility"
+rm -rf "$W"
+
+# Case C: many skills with tight budget → some marked INVISIBLE
+W=$(mktemp -d)
+seed_sandbox "$W" \
+  "a:$(printf 'x%.0s' {1..300})" \
+  "b:$(printf 'y%.0s' {1..300})" \
+  "c:$(printf 'z%.0s' {1..300})" \
+  "d:$(printf 'q%.0s' {1..300})"
+cd "$W"; OUT=$("$AUDIT" --budget 700 --no-color 2>&1); EXIT=$?
+cd /tmp
+[ "$EXIT" = "0" ] && pass "audit.py exits 0 with budget overflow" || fail "audit.py overflow exit"
+echo "$OUT" | grep -q "INVISIBLE" && pass "INVISIBLE marker shown when over budget" || fail "INVISIBLE marker"
+echo "$OUT" | grep -q "Suggested actions" && pass "Suggested actions section shown" || fail "suggested actions"
+rm -rf "$W"
+
+# Case D: malformed SKILL.md → does not crash
+W=$(mktemp -d)
+mkdir -p "$W/.claude/skills/broken"
+echo "garbage content no frontmatter" > "$W/.claude/skills/broken/SKILL.md"
+mkdir -p "$W/.claude/skills/empty"
+: > "$W/.claude/skills/empty/SKILL.md"
+cd "$W"; OUT=$("$AUDIT" --no-color 2>&1); EXIT=$?
+cd /tmp
+[ "$EXIT" = "0" ] && pass "audit.py exits 0 with malformed SKILL.md files" || fail "audit.py malformed exit"
+echo "$OUT" | grep -q "broken" && pass "audit.py falls back to folder name for missing frontmatter" || fail "audit.py folder-name fallback"
+rm -rf "$W"
+
+# Case E: --json produces valid machine-readable output
+W=$(mktemp -d)
+seed_sandbox "$W" "alpha:short desc" "beta:another short"
+cd "$W"; OUT=$("$AUDIT" --json 2>&1); EXIT=$?
+cd /tmp
+[ "$EXIT" = "0" ] && pass "audit.py --json exits 0" || fail "audit.py --json exit"
+echo "$OUT" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+assert d['skill_count'] == 2, f'expected 2 skills, got {d[\"skill_count\"]}'
+assert d['total_chars'] > 0, 'expected non-zero total'
+assert all('status' in s for s in d['skills']), 'each skill must have status field'
+print('OK')
+" 2>/dev/null && pass "audit.py --json schema is correct" || fail "audit.py --json schema"
+rm -rf "$W"
+
+# Case F: --budget flag actually changes output
+W=$(mktemp -d)
+seed_sandbox "$W" "z:$(printf 'x%.0s' {1..500})"
+cd "$W"
+OUT_HIGH=$("$AUDIT" --budget 15000 --no-color 2>&1)
+OUT_LOW=$("$AUDIT" --budget 100 --no-color 2>&1)
+cd /tmp
+echo "$OUT_HIGH" | grep -q "✓ visible" && \
+  echo "$OUT_LOW"  | grep -q "INVISIBLE" && \
+  pass "--budget flag changes visibility classification" || \
+  fail "--budget flag effect"
+rm -rf "$W"
 
 #-----------------------------------------------------------------------
 section "Static analysis — shellcheck"
