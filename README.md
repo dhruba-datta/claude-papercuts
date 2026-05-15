@@ -42,7 +42,7 @@ Skills in this plugin are namespaced. Invoke as
 | 4 | [`amnesia-fix`](skills/amnesia-fix) | [`#14227`](https://github.com/anthropics/claude-code/issues/14227), [`#27298`](https://github.com/anthropics/claude-code/issues/27298), [`#43696`](https://github.com/anthropics/claude-code/issues/43696) — no cross-session memory | ✅ |
 | 5 | [`token-x-ray`](skills/token-x-ray) | [`#39686`](https://github.com/anthropics/claude-code/issues/39686) — auto-injected plugins waste 6k+ tokens silently | ✅ |
 | 6 | [`compact-guard`](skills/compact-guard) | [`#24686`](https://github.com/anthropics/claude-code/issues/24686), [`#26061`](https://github.com/anthropics/claude-code/issues/26061) — plan-mode state lost on compact | ✅ |
-| 7 | `safe-shell` | (UpGuard/ClaudeLog postmortems) — YOLO `rm -rf` incidents | ⏳ |
+| 7 | [`safe-shell`](skills/safe-shell) | (UpGuard/ClaudeLog postmortems) — YOLO `rm -rf` incidents | ✅ |
 | 8 | `onboard` | (Medium/MindStudio reports) — new users install too many skills and churn | ⏳ |
 | 9 | `skill-doctor` | Root cause of [`#30387`](https://github.com/anthropics/claude-code/issues/30387) — descriptions overlap with training | ⏳ |
 | 10 | `subagent-broker` | [`#4182`](https://github.com/anthropics/claude-code/issues/4182), [`#5528`](https://github.com/anthropics/claude-code/issues/5528), [`#19077`](https://github.com/anthropics/claude-code/issues/19077) — subagent delegation broken | ⏳ |
@@ -75,7 +75,7 @@ you don't have to.
 bash tests/run-all.sh
 ```
 
-172 tests covering plugin schema, all Stop hooks' behavior
+216 tests covering plugin schema, all Stop hooks' behavior
 (snapshot pruning, claim detection, journal append/load),
 audit.py discovery + budget logic, regex extraction (bulleted
 and inline), unicode/control-char fidelity, concurrent

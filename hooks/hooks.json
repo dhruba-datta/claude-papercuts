@@ -26,6 +26,17 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/safe-shell/hooks/guard.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": ".*",
