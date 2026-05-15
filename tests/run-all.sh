@@ -11,6 +11,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOOK="$REPO/skills/unclear/hooks/snapshot.sh"
+DONE_HOOK="$REPO/skills/done-prover/hooks/verify-claims.sh"
 
 # Colors (disable if not a TTY)
 if [ -t 1 ]; then
@@ -401,6 +402,174 @@ count=$(find "$W/repo/.papercuts/snapshots" -name "*.jsonl" 2>/dev/null | wc -l 
 cleanup; cleanup_dir=""
 
 #-----------------------------------------------------------------------
+section "done-prover — artifact existence"
+#-----------------------------------------------------------------------
+
+[ -f "$REPO/skills/done-prover/SKILL.md" ] && pass "done-prover SKILL.md exists" || fail "done-prover SKILL.md exists"
+[ -f "$REPO/skills/done-prover/README.md" ] && pass "done-prover README.md exists" || fail "done-prover README.md exists"
+[ -x "$DONE_HOOK" ] && pass "verify-claims.sh is executable" || fail "verify-claims.sh is executable"
+[ -f "$REPO/demos/done-prover.gif" ] && pass "done-prover demo GIF exists" || fail "done-prover demo GIF exists"
+[ -f "$REPO/demos/done-prover.tape" ] && pass "done-prover tape exists" || fail "done-prover tape exists"
+[ -x "$REPO/demos/scenario-done-prover.sh" ] && pass "done-prover scenario script is executable" || fail "done-prover scenario script is executable"
+
+#-----------------------------------------------------------------------
+section "done-prover — SKILL.md frontmatter"
+#-----------------------------------------------------------------------
+
+python3 - <<PY
+import re, sys
+try:
+    with open("$REPO/skills/done-prover/SKILL.md") as f:
+        body = f.read()
+    m = re.match(r"^---\n(.*?)\n---\n", body, re.DOTALL)
+    assert m, "missing YAML frontmatter delimiters"
+    fm = m.group(1)
+    name_m = re.search(r"^name:\s*(\S+)", fm, re.MULTILINE)
+    assert name_m and name_m.group(1) == "done-prover", "name must be 'done-prover'"
+    desc_m = re.search(r"^description:\s*(.+?)(?=\n[a-z-]+:|\Z)", fm, re.DOTALL | re.MULTILINE)
+    assert desc_m, "description missing"
+    desc = desc_m.group(1).strip()
+    assert 50 < len(desc) < 1024, f"description {len(desc)} chars out of useful range"
+    rest = body[m.end():]
+    assert len(rest.strip()) > 100, "SKILL.md body is too short"
+    print(f"OK (desc={len(desc)} chars)")
+except AssertionError as e:
+    print(f"FAIL: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "done-prover SKILL.md frontmatter is valid"
+else
+  fail "done-prover SKILL.md frontmatter"
+fi
+
+#-----------------------------------------------------------------------
+section "done-prover — hook fail-safe behavior"
+#-----------------------------------------------------------------------
+
+# Empty stdin must not crash the hook
+EXIT=$(printf '' | "$DONE_HOOK" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "exit 0 on empty stdin" || fail "exit 0 on empty stdin (got $EXIT)"
+
+# Malformed JSON must not crash
+EXIT=$(printf 'not json {{{' | "$DONE_HOOK" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "exit 0 on malformed JSON" || fail "exit 0 on malformed JSON (got $EXIT)"
+
+# Missing transcript_path must not crash
+EXIT=$(printf '{"cwd":"/tmp"}' | "$DONE_HOOK" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "exit 0 on missing transcript_path" || fail "exit 0 on missing transcript_path"
+
+# Nonexistent transcript path must not crash
+EXIT=$(printf '{"transcript_path":"/does/not/exist","cwd":"/tmp"}' | "$DONE_HOOK" >/dev/null 2>&1; echo $?)
+[ "$EXIT" = "0" ] && pass "exit 0 on missing transcript file" || fail "exit 0 on missing transcript file"
+
+#-----------------------------------------------------------------------
+section "done-prover — claim detection and verdict"
+#-----------------------------------------------------------------------
+
+# Case A: no claim → silent
+W=$(mktemp -d)
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll help with that."}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+OUT=$(echo "$PAYLOAD" | "$DONE_HOOK")
+[ -z "$OUT" ] && pass "no claim → silent (no block)" || fail "no claim → silent (got: $OUT)"
+rm -rf "$W"
+
+# Case B: claim but tests passed → silent (claim is honest)
+W=$(mktemp -d)
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"run tests"}}
+{"type":"tool_result","content":"============ 47 passed in 1.2s ============"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All 47 tests pass."}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+OUT=$(echo "$PAYLOAD" | "$DONE_HOOK")
+[ -z "$OUT" ] && pass "honest claim → silent" || fail "honest claim → silent (got: $OUT)"
+rm -rf "$W"
+
+# Case C: claim WITH failures → block JSON output
+W=$(mktemp -d)
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"run tests"}}
+{"type":"tool_result","content":"FAILED tests/test_auth.py::test_token\n45 passed, 2 failed, 1 skipped in 1.5s"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All 47 tests pass."}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+OUT=$(echo "$PAYLOAD" | "$DONE_HOOK")
+# Must be valid JSON with decision=block
+DECISION=$(echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+[ "$DECISION" = "block" ] && pass "false claim → JSON decision=block" || fail "false claim → block (got: $OUT)"
+# Verdict markdown artifact must have been written
+ls "$W/.papercuts/proofs/"*.md >/dev/null 2>&1 && pass "verdict artifact written to .papercuts/proofs/" || fail "verdict artifact written"
+rm -rf "$W"
+
+# Case D: "X tests pass" numeric claim with actual failures → blocked
+W=$(mktemp -d)
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"check"}}
+{"type":"tool_result","content":"3 failed, 12 passed in 0.4s"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"15 tests pass — feature complete."}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+OUT=$(echo "$PAYLOAD" | "$DONE_HOOK")
+DECISION=$(echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+[ "$DECISION" = "block" ] && pass "numeric claim with failures → block" || fail "numeric claim → block"
+rm -rf "$W"
+
+# Case E: "all green" with AssertionError → blocked
+W=$(mktemp -d)
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"again"}}
+{"type":"tool_result","content":"raise AssertionError('oops')\n\nE   AssertionError: oops"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Everything is green now."}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+OUT=$(echo "$PAYLOAD" | "$DONE_HOOK")
+DECISION=$(echo "$OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+[ "$DECISION" = "block" ] && pass "AssertionError surfaced under 'all green' claim" || fail "AssertionError → block"
+rm -rf "$W"
+
+# Case F: claim without ANY tool_result history → silent (no evidence to verify against)
+W=$(mktemp -d)
+cat > "$W/t.jsonl" <<'EOF'
+{"type":"user","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All tests pass."}]}}
+EOF
+PAYLOAD=$(printf '{"transcript_path":"%s/t.jsonl","cwd":"%s"}' "$W" "$W")
+OUT=$(echo "$PAYLOAD" | "$DONE_HOOK")
+[ -z "$OUT" ] && pass "claim without evidence → silent (no false positives)" || fail "claim w/o evidence → silent (got: $OUT)"
+rm -rf "$W"
+
+#-----------------------------------------------------------------------
+section "hooks.json — both Stop hooks registered"
+#-----------------------------------------------------------------------
+
+python3 - <<PY
+import json, sys
+try:
+    with open("$REPO/hooks/hooks.json") as f:
+        h = json.load(f)
+    stop = h["hooks"]["Stop"]
+    inner_hooks = stop[0]["hooks"]
+    cmds = [hk["command"] for hk in inner_hooks]
+    assert any("snapshot.sh" in c for c in cmds), "snapshot.sh not registered"
+    assert any("verify-claims.sh" in c for c in cmds), "verify-claims.sh not registered"
+    assert all("\${CLAUDE_PLUGIN_ROOT}" in c for c in cmds), "all hooks must use \${CLAUDE_PLUGIN_ROOT}"
+    print("OK")
+except (AssertionError, KeyError, IndexError) as e:
+    print(f"FAIL: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+if [ $? -eq 0 ]; then
+  pass "hooks.json registers both Stop hooks with CLAUDE_PLUGIN_ROOT"
+else
+  fail "hooks.json registration"
+fi
+
+#-----------------------------------------------------------------------
 section "Static analysis — shellcheck"
 #-----------------------------------------------------------------------
 
@@ -410,8 +579,14 @@ if command -v shellcheck >/dev/null 2>&1; then
   else
     fail "shellcheck passes on snapshot.sh"
   fi
+  if shellcheck "$DONE_HOOK"; then
+    pass "shellcheck passes on verify-claims.sh"
+  else
+    fail "shellcheck passes on verify-claims.sh"
+  fi
 else
   skip "shellcheck on snapshot.sh" "shellcheck not installed"
+  skip "shellcheck on verify-claims.sh" "shellcheck not installed"
 fi
 
 # Run the test runner through shellcheck too (skip SC2086 cases we already know about)

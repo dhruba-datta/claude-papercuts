@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/skills/unclear/hooks/snapshot.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/done-prover/hooks/verify-claims.sh"
           }
         ]
       }
